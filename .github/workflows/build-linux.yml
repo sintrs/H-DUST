@@ -1,20 +1,18 @@
-name: Build Linux for glibc 2.28 (UOS 20 / Debian 10)
+name: Build Linux (upstream nightly + offline launcher)
 
 # 手动触发：Actions → 这个 workflow → Run workflow。产物在本次运行的 Artifacts 里。
 #
 # 这个仓库不托管 Horizon 的源码：workflow 自己去公开仓库克隆，编完只上传二进制。
 # 仓库里只需要 tools/ci/ 的几个脚本 + 这一个 workflow 文件。
 #
-# 为什么是两路源码：
-#   · 游戏本体用 horizon-rust/horizon（真上游，最新引擎）；
-#   · 启动器用 gerdaroot 的离线分支 —— 上游 0.2.79 已经把"离线身份"整个删掉了
-#     （account.rs 只剩 old_offline 的只读兼容），没有正版账号就进不去；
-#     离线分支保留了 GATE_OPEN，可以无账号开局。
+# 两路源码：
+#   · 游戏本体用 horizon-rust/horizon（真上游，每次现场 clone 默认分支 = 当天最新）；
+#   · 启动器用 gerdaroot 的离线分支 —— 上游 0.2.79 起删掉了离线身份
+#     (launcher: remove offline names; play only as an account that owns the game)，
+#     没有正版账号就进不去；离线分支保留 account::GATE_OPEN = true，可以无账号开局。
 #
-# 为什么不用 Horizon 自带的 launcher.yml / game-build.yml：
-#   · 它们跑在 ubuntu-22.04 上，产物要 GLIBC_2.35，UOS 20（2.28）加载不了；
-#   · 它们会去改原仓库的 release，在你的仓库里必然失败。
-# 这里只在 Debian 10 容器里编译，不发 release、不碰 secret。
+# 产物：glibc >= 2.35 的机器可直接跑（与上游官方包同档）。
+# 不再编 glibc 2.28 版本 —— Debian 10 容器那一层已移除。
 
 on:
   workflow_dispatch:
@@ -25,12 +23,12 @@ on:
         default: horizon-rust/horizon
         type: string
       game_ref:
-        description: '游戏源码的分支/tag/commit（留空 = 默认分支）'
+        description: '游戏源码的分支/tag/commit（留空 = 默认分支最新）'
         required: false
         default: ''
         type: string
       launcher_repo:
-        description: '启动器源码（默认带离线门禁的分支）'
+        description: '启动器源码（默认带离线门禁的 fork）'
         required: false
         default: gerdaroot/Horizon-Offline-Launcher
         type: string
@@ -41,24 +39,32 @@ on:
         type: choice
         options: [both, launcher, game]
       target_cpu:
-        description: 'CPU 基线：x86-64（通用）/ x86-64-v3（AVX2，KX-7000 可用）'
+        description: 'CPU 基线：x86-64（通用）/ x86-64-v2 / x86-64-v3（AVX2）'
         required: false
         default: x86-64
         type: choice
-        options: [x86-64, x86-64-v3]
+        options: [x86-64, x86-64-v2, x86-64-v3]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 300
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
-      - name: 腾出磁盘（Rust 大项目编译产物很大）
+      - name: 腾出磁盘
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          sudo docker image prune -af 2>/dev/null || true
           df -h /
+
+      - name: 系统依赖（ALSA / udev 头文件，上游 linux job 同款）
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
+      - name: Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
 
       - name: 取游戏源码
         if: inputs.targets != 'launcher'
@@ -73,13 +79,8 @@ jobs:
           echo "游戏源码：$(git -C game-src log -1 --format='%h %ad %s' --date=short)"
           echo "工作树：$(du -sh game-src | cut -f1)"
           # 构建身份：crates/horizon-mod-host/build.rs 要一个 commit 号，没给就自己跑
-          # `git rev-parse HEAD`。但容器里进程是 root、/src 属主是 runner，git 会以
-          # "dubious ownership" 拒绝服务，build.rs 直接 panic：
-          #   git rev-parse HEAD failed; set HORIZON_GAME_BUILD_ID for staged builds
-          # 有这个名字的环境变量它就不碰 git 了（上游 staged build 正是这么传的）。
-          # 在宿主侧算好，随 docker run -e 传下去。
+          # `git rev-parse HEAD` 并断言成功；有它就完全不碰 git（上游 staged build 的正规入口）。
           echo "HORIZON_GAME_BUILD_ID=$(git -C game-src rev-parse HEAD)" >> "$GITHUB_ENV"
-          # 布局自检：上游有 crates/horizon-official；离线分支没有（游戏入口直接叫 horizon-client）
           if [[ -d game-src/crates/horizon-official ]]; then
             echo "布局：upstream（游戏入口 horizon-official → 打包时改名 horizon-client）"
           else
@@ -91,7 +92,6 @@ jobs:
         run: |
           git clone --depth 1 --no-tags "https://github.com/${{ inputs.launcher_repo }}.git" launcher-src
           echo "启动器源码：$(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
-          # 只编启动器时上面那步「取游戏源码」不跑，这里补一个，保证变量永远有值
           if [[ -z "${HORIZON_GAME_BUILD_ID:-}" ]]; then
             echo "HORIZON_GAME_BUILD_ID=$(git -C launcher-src rev-parse HEAD)" >> "$GITHUB_ENV"
           fi
@@ -102,58 +102,53 @@ jobs:
             echo "::warning::启动器源码里没有 GATE_OPEN = true，没有正版账号将无法开局"
           fi
 
-      - name: 确认构建环境
-        run: |
-          docker version --format 'Docker {{.Server.Version}}'
-          echo "宿主 glibc $(ldd --version | head -1 | awk '{print $NF}')（只用于跑容器，产物取决于容器）"
-
       - name: 编译启动器
         if: inputs.targets != 'game'
         env:
           RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu }}
-        run: bash tools/ci/build-glibc228.sh launcher-src dist launcher
+        run: bash tools/ci/build-linux.sh launcher-src dist launcher
 
       - name: 编译游戏二进制（client / ctl / prepare / server + wasm-std）
         if: inputs.targets != 'launcher'
         env:
           RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu }}
-        run: bash tools/ci/build-glibc228.sh game-src dist game
+        run: bash tools/ci/build-linux.sh game-src dist game
 
-      - name: 装进官方包（骨架 = 上游 nightly，只换受 glibc 影响的二进制）
+      - name: 装进官方 nightly 包（骨架 + 我们编的二进制）
         if: inputs.targets != 'launcher'
         run: |
-          bash tools/ci/make-uos-package.sh dist package \
+          bash tools/ci/make-linux-package.sh dist package \
             "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz"
 
       - name: 汇总结果
         if: always()
         run: |
           {
-            echo "## 产物（glibc 上限判定）"
+            echo "## 产物"
             echo
-            echo "| 文件 | 需要的最高 GLIBC | 大小 | 结论 |"
-            echo "|---|---|---|---|"
+            echo "| 文件 | glibc 地板 | 大小 |"
+            echo "|---|---|---|"
             for f in dist/* package/*.tar.gz; do
               [[ -f "$f" ]] || continue
               case "$f" in
-                *.tar.gz) echo "| \`$(basename "$f")\` | — | $(du -h "$f" | cut -f1) | 完整包 |"; continue ;;
+                *.tar.gz) echo "| \`$(basename "$f")\` | — | $(du -h "$f" | cut -f1) |"; continue ;;
               esac
               v=$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
-              if [[ -z "$v" ]]; then r="非 ELF / 无法判定"; \
-              elif [[ "$(printf '%s\n2.28\n' "${v#GLIBC_}" | sort -V | tail -1)" == "2.28" ]]; then r="可在 UOS 20 运行"; \
-              else r="**超过 2.28，UOS 加载不了**"; fi
-              echo "| \`$(basename "$f")\` | ${v:-?} | $(du -h "$f" | cut -f1) | $r |"
+              echo "| \`$(basename "$f")\` | ${v:-非 ELF} | $(du -h "$f" | cut -f1) |"
             done
             echo
             echo "游戏源码：\`${{ inputs.game_repo }}\` @ \`${{ inputs.game_ref || 'default' }}\` · 启动器：\`${{ inputs.launcher_repo }}\`"
             echo
-            echo "CPU 基线：\`${{ inputs.target_cpu }}\`。指令集判据是 POPCNT/LZCNT（上游 tools/check_cpu_baseline.py），"
-            echo "不是「有没有 AVX-512」—— AVX/FMA 一律在 CPUID 检查之后执行，数它们只会误报。"
+            echo "CPU 基线：\`${{ inputs.target_cpu }}\`。"
+            echo
+            echo "> 组合提醒：上游最新游戏 + 离线 fork 启动器可能撞上 cache lease 契约"
+            echo "> （报 \`cannot acquire launcher cache leases / unregistered cache directories\`）。"
+            echo "> 真撞上了，把 \`game_ref\` 填成与该启动器配套的那个 nightly 日期再编一次。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: horizon-glibc228-${{ inputs.target_cpu }}
+          name: horizon-linux-${{ inputs.target_cpu }}
           path: |
             dist/
             package/
