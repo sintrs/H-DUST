@@ -25,8 +25,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 # python3 是给上游 tools/check_cpu_baseline.py 用的（它按符号边界判断指令集，比数助记符准）。
 
-# 不要用 buster 自带的 rustc（1.41），编不动 edition 2021 和 gpui-fast。
-# rustup 的 stable 自身只要 glibc >= 2.17，在 buster 上可以正常跑。
+# 源码是宿主目录挂进来的（-v $SRC:/src），容器里进程是 root、文件属主是宿主用户，
+# git 会把 /src 判成 "dubious ownership" 而拒绝执行任何子命令。有些 build.rs 会调 git
+# （horizon-mod-host 要 commit 号），所以先把这道门槛拆掉；正式路径仍由
+# HORIZON_GAME_BUILD_ID 显式传值，不依赖它。
+RUN git config --global --add safe.directory '*'
+
+# 不要用 buster 自带的 rustc（1.41），编不动 edition 2021 和 gpui-fast。# rustup 的 stable 自身只要 glibc >= 2.17，在 buster 上可以正常跑。
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

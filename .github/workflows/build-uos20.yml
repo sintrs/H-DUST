@@ -72,6 +72,13 @@ jobs:
           fi
           echo "游戏源码：$(git -C game-src log -1 --format='%h %ad %s' --date=short)"
           echo "工作树：$(du -sh game-src | cut -f1)"
+          # 构建身份：crates/horizon-mod-host/build.rs 要一个 commit 号，没给就自己跑
+          # `git rev-parse HEAD`。但容器里进程是 root、/src 属主是 runner，git 会以
+          # "dubious ownership" 拒绝服务，build.rs 直接 panic：
+          #   git rev-parse HEAD failed; set HORIZON_GAME_BUILD_ID for staged builds
+          # 有这个名字的环境变量它就不碰 git 了（上游 staged build 正是这么传的）。
+          # 在宿主侧算好，随 docker run -e 传下去。
+          echo "HORIZON_GAME_BUILD_ID=$(git -C game-src rev-parse HEAD)" >> "$GITHUB_ENV"
           # 布局自检：上游有 crates/horizon-official；离线分支没有（游戏入口直接叫 horizon-client）
           if [[ -d game-src/crates/horizon-official ]]; then
             echo "布局：upstream（游戏入口 horizon-official → 打包时改名 horizon-client）"
@@ -84,6 +91,10 @@ jobs:
         run: |
           git clone --depth 1 --no-tags "https://github.com/${{ inputs.launcher_repo }}.git" launcher-src
           echo "启动器源码：$(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
+          # 只编启动器时上面那步「取游戏源码」不跑，这里补一个，保证变量永远有值
+          if [[ -z "${HORIZON_GAME_BUILD_ID:-}" ]]; then
+            echo "HORIZON_GAME_BUILD_ID=$(git -C launcher-src rev-parse HEAD)" >> "$GITHUB_ENV"
+          fi
           # 离线门禁自检：这个常量决定"没有正版账号能不能开局"
           if grep -rq 'GATE_OPEN: bool = true' launcher-src/launcher/src/account.rs 2>/dev/null; then
             echo "离线门禁：开启（GATE_OPEN = true）"

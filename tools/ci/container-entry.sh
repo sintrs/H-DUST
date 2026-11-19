@@ -19,6 +19,15 @@ OUT_DIR=${OUT_DIR:-/out}
 cd "$SRC_ROOT" || { echo "错误：没有 $SRC_ROOT" >&2; exit 1; }
 mkdir -p "$OUT_DIR"
 
+# /src 是宿主挂进来的，进程是 root —— git 会以 "dubious ownership" 拒绝所有子命令。
+# 编译期有 build.rs 要跑 `git rev-parse HEAD`（horizon-mod-host），门槛不拆它就 panic。
+# 镜像里已经配过一次，这里再配一次：旧镜像缓存、或者有人手动起容器时也能兜住。
+git config --global --add safe.directory '*' 2>/dev/null || true
+if [[ -z "${HORIZON_GAME_BUILD_ID:-}" ]] && git -C "$SRC_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+  export HORIZON_GAME_BUILD_ID=$(git -C "$SRC_ROOT" rev-parse HEAD)
+  echo "==> 构建身份（容器内补算）：$HORIZON_GAME_BUILD_ID"
+fi
+
 # 源码布局：上游 horizon-rust/horizon 有 crates/horizon-official（游戏入口叫 horizon-official，
 # 打完包才改名 horizon-client）；离线分支 gerdaroot 那份还是旧的 horizon-client 直出。
 LAYOUT=legacy

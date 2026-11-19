@@ -43,9 +43,22 @@ esac
 : "${RUSTFLAGS:=-C target-cpu=x86-64}"
 export RUSTFLAGS
 
+# 构建身份（游戏本体必需）：
+#   crates/horizon-mod-host/build.rs 要一个 commit 号，没给就自己跑 `git rev-parse HEAD`。
+#   容器里进程是 root、/src 属主是宿主用户，git 会以 "dubious ownership" 拒绝服务，
+#   build.rs 直接 panic（git rev-parse HEAD failed; set HORIZON_GAME_BUILD_ID for staged builds）。
+#   有这个环境变量它就不碰 git 了 —— 这是上游给 staged build 留的正规入口。
+#   宿主侧能取到就取真实 commit，取不到（比如导出成 tar 的源码）给个时间戳兜底。
+if [[ -z "${HORIZON_GAME_BUILD_ID:-}" ]]; then
+  HORIZON_GAME_BUILD_ID=$(git -C "$SRC" rev-parse HEAD 2>/dev/null \
+    || echo "local-$(date -u +%Y%m%d%H%M%S)")
+fi
+export HORIZON_GAME_BUILD_ID
+
 echo "==> 目标：$VERIFY_LIST"
 echo "==> 源码：$SRC"
 echo "==> RUSTFLAGS=$RUSTFLAGS"
+echo "==> 构建身份：$HORIZON_GAME_BUILD_ID"
 
 run_native() {
   echo "==> 走本机编译（没有 docker，或 NATIVE=1）"
@@ -70,6 +83,7 @@ else
     -v "horizon-glibc228-target-$FLAVOR":/target \
     -e CARGO_TARGET_DIR=/target \
     -e RUSTFLAGS="$RUSTFLAGS" \
+    -e HORIZON_GAME_BUILD_ID="$HORIZON_GAME_BUILD_ID" \
     -e HOST_UID="$(id -u)" \
     -e HOST_GID="$(id -g)" \
     horizon-glibc228:latest \
