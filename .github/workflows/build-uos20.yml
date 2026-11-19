@@ -1,0 +1,101 @@
+name: Build Linux for glibc 2.28 (UOS 20 / Debian 10)
+
+# 手动触发：Actions → 这个 workflow → Run workflow。
+# 产物在本次运行的 Artifacts 里，下载后就是要拷到 UOS 上的二进制。
+#
+# 这个仓库不需要装 Horizon 的源码：workflow 自己去公开仓库克隆，编完只上传二进制。
+# 所以仓库里只要有 tools/ci/ 三个脚本 + 这一个 workflow 文件就够了（约 20 KB）。
+#
+# 为什么不用 Horizon 自带的 launcher.yml / game.yml：
+#   · 它们跑在 ubuntu-22.04 上，产物要 GLIBC_2.35，UOS 20（2.28）加载不了；
+#   · 它们会去改原仓库的 release，在你的仓库里必然失败。
+# 这里只在 Debian 10 容器里编译，不发 release、不碰 secret。
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: '源码仓库'
+        required: false
+        default: gerdaroot/Horizon-Offline-Launcher
+        type: choice
+        options:
+          - gerdaroot/Horizon-Offline-Launcher
+          - horizon-rust/horizon
+      targets:
+        description: '编译哪些目标'
+        required: false
+        default: both
+        type: choice
+        options: [both, launcher, game]
+      target_cpu:
+        description: 'CPU 指令集基线'
+        required: false
+        default: baseline
+        type: choice
+        options: [baseline, x86-64-v3]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 腾出磁盘（Rust 大项目编译产物很大）
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          df -h /
+
+      - name: 取源码
+        run: |
+          git clone --depth 1 --no-tags "https://github.com/${{ inputs.source_repo }}.git" src
+          echo "源码：$(git -C src log -1 --format='%h %s')"
+          echo "工作树：$(du -sh src | cut -f1)"
+
+      - name: 确认构建环境
+        run: |
+          docker version --format 'Docker {{.Server.Version}}'
+          echo "宿主 glibc $(ldd --version | head -1 | awk '{print $NF}')（只用于编译，产物取决于容器）"
+
+      - name: 编译启动器
+        if: inputs.targets != 'game'
+        env:
+          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'baseline' }}
+        run: bash tools/ci/build-glibc228.sh src dist launcher
+
+      - name: 编译游戏二进制（client / prepare / server）
+        if: inputs.targets != 'launcher'
+        env:
+          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'baseline' }}
+        run: bash tools/ci/build-glibc228.sh src dist game
+
+      - name: 汇总结果
+        if: always()
+        run: |
+          {
+            echo "## 产物（glibc 上限判定）"
+            echo
+            echo "| 文件 | 需要的最高 GLIBC | 大小 | 结论 |"
+            echo "|---|---|---|---|"
+            for f in dist/*; do
+              [[ -f "$f" ]] || continue
+              v=$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+              if [[ -z "$v" ]]; then r="无法判定"; \
+              elif [[ "$(printf '%s\n2.28\n' "${v#GLIBC_}" | sort -V | tail -1)" == "2.28" ]]; then r="可在 UOS 20 运行"; \
+              else r="**超过 2.28，UOS 加载不了**"; fi
+              echo "| \`$(basename "$f")\` | ${v:-?} | $(du -h "$f" | cut -f1) | $r |"
+            done
+            echo
+            echo "CPU 基线：\`${{ inputs.target_cpu || 'baseline' }}\` · 源码：\`${{ inputs.source_repo }}\`"
+            echo
+            echo "缺了某个文件，说明它在公开仓库里编不出来（多数是缺构建期资源），用官方包里那个代替。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-glibc228-${{ inputs.target_cpu || 'baseline' }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
