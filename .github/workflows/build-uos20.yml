@@ -29,11 +29,11 @@ on:
         type: choice
         options: [both, launcher, game]
       target_cpu:
-        description: 'CPU 指令集基线'
+        description: 'CPU 指令集基线：x86-64（通用，默认）或 x86-64-v3（AVX2，KX-7000 可用）'
         required: false
-        default: baseline
+        default: x86-64
         type: choice
-        options: [baseline, x86-64-v3]
+        options: [x86-64, x86-64-v3]
 
 jobs:
   build:
@@ -62,13 +62,13 @@ jobs:
       - name: 编译启动器
         if: inputs.targets != 'game'
         env:
-          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'baseline' }}
+          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'x86-64' }}
         run: bash tools/ci/build-glibc228.sh src dist launcher
 
       - name: 编译游戏二进制（client / prepare / server）
         if: inputs.targets != 'launcher'
         env:
-          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'baseline' }}
+          RUSTFLAGS: -C target-cpu=${{ inputs.target_cpu || 'x86-64' }}
         run: bash tools/ci/build-glibc228.sh src dist game
 
       - name: 汇总结果
@@ -88,14 +88,14 @@ jobs:
               echo "| \`$(basename "$f")\` | ${v:-?} | $(du -h "$f" | cut -f1) | $r |"
             done
             echo
-            echo "CPU 基线：\`${{ inputs.target_cpu || 'baseline' }}\` · 源码：\`${{ inputs.source_repo }}\`"
+            echo "CPU 基线：\`${{ inputs.target_cpu || 'x86-64' }}\` · 源码：\`${{ inputs.source_repo }}\`"
             echo
             echo "缺了某个文件，说明它在公开仓库里编不出来（多数是缺构建期资源），用官方包里那个代替。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: horizon-glibc228-${{ inputs.target_cpu || 'baseline' }}
+          name: horizon-glibc228-${{ inputs.target_cpu || 'x86-64' }}
           path: dist/
           if-no-files-found: error
           retention-days: 30

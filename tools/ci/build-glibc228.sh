@@ -62,9 +62,12 @@ esac
 
 echo "==> 目标：$VERIFY_LIST，最高 glibc 符号版本 $MAXGLIBC"
 
-# CPU 指令集基线：默认 baseline（equals rustc 的默认值，写出来是为了不被别处的
-# target-cpu=native 带跑）。目标机是兆芯 KX-7000 / 老款 Intel 时，AVX-512 指令会直接 SIGILL。
-: "${RUSTFLAGS:=-C target-cpu=baseline}"
+# CPU 指令集基线：x86-64 就是 rustc 的默认基线（LLVM 的 "baseline"、GCC 的 -march=x86-64），
+# 写出来是为了不被别处的 target-cpu=native 带跑。目标机是兆芯 KX-7000 / 老款 Intel 时，
+# AVX-512 指令会直接 SIGILL。
+# 注意：值必须是 LLVM 认识的 CPU 名 —— x86-64、x86-64-v2、x86-64-v3、x86-64-v4 或具体型号。
+# 写 "baseline" 会得到 "not a recognized processor" 并让 LLVM 报 64-bit code requested 而编译失败。
+: "${RUSTFLAGS:=-C target-cpu=x86-64}"
 export RUSTFLAGS
 echo "==> RUSTFLAGS=$RUSTFLAGS"
 
