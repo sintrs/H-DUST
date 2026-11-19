@@ -57,8 +57,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL 2>/dev/null || true
           df -h /
 
-      - name: 系统依赖（ALSA / udev 头文件，上游 linux job 同款）
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - name: 系统依赖
+        # 游戏本体只要 ALSA / udev（上游 linux job 同款）；
+        # 启动器是 gpui-fast 图形程序，链接期直接要 -lxkbcommon、-lxkbcommon-x11、
+        # 以及 wayland / xcb / fontconfig 的头文件 —— 少了就是 rust-lld: unable to find library。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libasound2-dev libudev-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev \
+            libfontconfig1-dev libvulkan-dev
 
       - name: Rust 工具链
         uses: dtolnay/rust-toolchain@stable
