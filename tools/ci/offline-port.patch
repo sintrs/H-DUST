@@ -281,18 +281,101 @@ index 49ab979..14dc9b0 100644
          if let Some(e) = session.offline {
              eprintln!("Playing offline: {e}");
 diff --git a/launcher/src/cli.rs b/launcher/src/cli.rs
-index dc0afba..c17f51e 100644
+index dc0afba..f95d75d 100644
 --- a/launcher/src/cli.rs
 +++ b/launcher/src/cli.rs
-@@ -2085,7 +2085,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+@@ -140,8 +140,13 @@ enum AccountCmd {
+         /// Its name or UUID
+         who: String,
+     },
+-    /// Play as this account
++    /// Play as this account, or as one of your offline names
+     Select { who: String },
++    /// Play offline (LAN, offline-mode servers) as NAME (3 to 16 letters, digits or _), or as the
++    /// name the game makes up
++    Offline { name: Option<String> },
++    /// Forget one of your offline names
++    ForgetOffline { name: String },
+ }
+ 
+ #[derive(Subcommand)]
+@@ -1978,13 +1983,17 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+                         "selected": accounts.selected.as_ref() == Some(&a.uuid),
+                         "authentication": account::session::status(account::store(), &a.uuid),
+                     })).collect::<Vec<_>>(),
++                    "offline": accounts.offline.iter().map(|n| serde_json::json!({
++                        "name": n,
++                        "selected": accounts.player() == account::Player::Offline(n.clone()),
++                    })).collect::<Vec<_>>(),
+                     "sign_in_configured": account::client_id().is_some(),
+                     "owner": accounts.has_owner(account::store()),
+                 }));
+-            } else if accounts.accounts.is_empty() {
++            } else if accounts.accounts.is_empty() && accounts.offline.is_empty() {
+                 println!(
+-                    "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
+-                     Edition: horizon-launcher account sign-in"
++                    "No Microsoft account signed in. Play starts offline as the name the game \
++                     makes up (`horizon-launcher account offline NAME` keeps one)"
+                 );
+             } else {
+                 for a in &accounts.accounts {
+@@ -2001,7 +2010,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+                     };
+                     println!("{mark} {}  {}  {}{why}", a.name, a.uuid, status.label());
+                 }
+-                if !accounts.has_owner(account::store()) {
++                for n in &accounts.offline {
++                    let on = accounts.player() == account::Player::Offline(n.clone());
++                    println!("{} {n}  offline", if on { "*" } else { " " });
++                }
++                if accounts.offline_selected.is_none() && !accounts.has_owner(account::store()) {
+                     println!(
+                         "{} {}",
+                         account::NoOwner::default(),
+@@ -2084,10 +2097,39 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+             println!("Signed out {}.", a.name);
          }
          AccountCmd::Select { who } => {
-             let a = find(&accounts, &who)?;
+-            let a = find(&accounts, &who)?;
 -            accounts.play_as(&a.uuid)?;
-+            accounts.play_as(crate::account::Player::Microsoft(a.uuid.clone()))?;
++            if let Some(kept) = accounts
++                .offline
++                .iter()
++                .find(|n| n.eq_ignore_ascii_case(who.trim()))
++                .cloned()
++            {
++                accounts.play_as(crate::account::Player::Offline(kept.clone()))?;
++                accounts.save()?;
++                println!("The game plays offline as {kept}.");
++            } else {
++                let a = find(&accounts, &who)?;
++                accounts.play_as(crate::account::Player::Microsoft(a.uuid.clone()))?;
++                accounts.save()?;
++                println!("The game plays as {}.", a.name);
++            }
++        }
++        AccountCmd::Offline { name } => match name {
++            Some(name) => {
++                accounts.play_as(crate::account::Player::Offline(name))?;
++                accounts.save()?;
++                let kept = accounts.offline_selected.clone().unwrap_or_default();
++                println!("The game plays offline as {kept}.");
++            }
++            None => {
++                accounts.play_as(crate::account::Player::GameName)?;
++                accounts.save()?;
++                println!("The game plays offline as the name it makes up.");
++            }
++        },
++        AccountCmd::ForgetOffline { name } => {
++            accounts.remove_offline(&name)?;
              accounts.save()?;
-             println!("The game plays as {}.", a.name);
+-            println!("The game plays as {}.", a.name);
++            println!("Forgot {name}.");
          }
+     }
+     Ok(())
 diff --git a/launcher/src/developer_offline.rs b/launcher/src/developer_offline.rs
 index 2a93c35..ba8c747 100644
 --- a/launcher/src/developer_offline.rs
@@ -340,11 +423,382 @@ index f0f404f..c88a6e6 100644
                  cmd.envs(env);
                  // Still play, offline, and say why.
                  if let Some(e) = offline {
+diff --git a/launcher/src/glass_account.rs b/launcher/src/glass_account.rs
+index e9bd43f..2104183 100644
+--- a/launcher/src/glass_account.rs
++++ b/launcher/src/glass_account.rs
+@@ -11,42 +11,63 @@ use horizon_theme::glass::{ink, radius};
+ impl Launcher {
+     pub(super) fn glass_account(&mut self, cx: &mut Context<Self>) -> Div {
+         let wide = self.window_width >= crate::glass_home::WIDE;
+-        // Signed out, "who plays" would only repeat the Microsoft card's call to sign in.
+-        if self.accounts.selected().is_none() {
+-            return div().child(self.glass_microsoft_card(cx).w_full());
+-        }
+-        let left = self.glass_who_plays();
+         let right = self.glass_microsoft_card(cx);
+-        if wide {
+-            div()
+-                .flex()
+-                .flex_row()
+-                .gap(px(8.))
+-                .child(left.flex_1().min_w(px(280.)).p(px(20.)))
+-                .child(right.flex_none().w(px(360.)))
++        // Signed out and playing as nobody in particular: "who plays" would only repeat the
++        // Microsoft card's call to sign in.
++        let playing = !matches!(self.accounts.player(), account::Player::GameName);
++        let top = if playing {
++            let left = self.glass_who_plays();
++            if wide {
++                div()
++                    .flex()
++                    .flex_row()
++                    .gap(px(8.))
++                    .child(left.flex_1().min_w(px(280.)).p(px(20.)))
++                    .child(right.flex_none().w(px(360.)))
++            } else {
++                div()
++                    .flex()
++                    .flex_col()
++                    .gap(px(16.))
++                    .child(left.w_full().min_w_0().p(px(20.)))
++                    .child(right.w_full())
++            }
+         } else {
+-            div()
+-                .flex()
+-                .flex_col()
+-                .gap(px(16.))
+-                .child(left.w_full().min_w_0().p(px(20.)))
+-                .child(right.w_full())
+-        }
++            div().child(right.w_full())
++        };
++        div()
++            .flex()
++            .flex_col()
++            .gap(px(8.))
++            .child(top)
++            .child(self.glass_offline_card(cx))
+     }
+ 
+     /// The player now.
+     fn glass_who_plays(&self) -> Div {
+         let t = self.theme;
+-        let (uuid, name, status) = match self.accounts.selected() {
+-            Some(a) => (
+-                Some(a.uuid.clone()),
+-                a.name.clone(),
+-                (Tone::Live, tr("Microsoft account · online servers too")),
++        let (uuid, name, status) = match self.accounts.player() {
++            account::Player::Microsoft(_) => {
++                let account = self.accounts.selected();
++                (
++                    account.map(|a| a.uuid.clone()),
++                    account.map(|a| a.name.clone()).unwrap_or_default(),
++                    (Tone::Live, tr("Microsoft account · online servers too")),
++                )
++            }
++            // This build's normal player: no account, the name the launcher keeps.
++            account::Player::Offline(name) => (
++                None,
++                name,
++                (
++                    Tone::Live,
++                    tr("Offline · single-player, LAN and offline-mode servers"),
++                ),
+             ),
+-            None => (
++            account::Player::GameName => (
+                 None,
+-                tr("Sign in with Microsoft").to_string(),
+-                (Tone::Off, tr(account::NEEDS_OWNER)),
++                tr("The name the game makes up").to_string(),
++                (Tone::Off, tr("Offline, without a name of its own")),
+             ),
+         };
+         let head = div()
+@@ -202,4 +223,140 @@ impl Launcher {
+                 )
+             })
+     }
++
++    /// "Play offline": the name this build plays as. There is no account gate here, so an offline
++    /// name is the ordinary way to play; the Microsoft card beside it stays for online servers.
++    fn glass_offline_card(&mut self, cx: &mut Context<Self>) -> Div {
++        let t = self.theme;
++        let focused = self.offline_focused;
++        let playing = match self.accounts.player() {
++            account::Player::Offline(name) => Some(name),
++            _ => None,
++        };
++        let summary = match &playing {
++            Some(name) => format!("{} {name}", tr("Playing offline as")),
++            None => tr("Playing offline as the name the game makes up").to_string(),
++        };
++        let field = div()
++            .id("offline-name")
++            .track_focus(&self.offline_focus)
++            .flex()
++            .items_center()
++            .w(px(220.))
++            .h(px(44.))
++            .px(px(12.))
++            .rounded(px(radius::ROW))
++            .border_1()
++            .border_color(if focused {
++                white(0.34)
++            } else {
++                white(ui::edge::REST)
++            })
++            .bg(white(0.05))
++            .font_family(horizon_theme::glass::FONT)
++            .text_size(px(14.))
++            .cursor_text()
++            .child(line_edit::content(
++                &self.offline_input,
++                &t,
++                focused,
++                false,
++                false,
++                "Offline name",
++            ))
++            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
++                window.focus(&this.offline_focus, cx);
++                cx.notify();
++            }))
++            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
++                match line_edit::handle(&mut this.offline_input, ev, cx) {
++                    line_edit::Key::Pass => return,
++                    line_edit::Key::Escape => window.blur(cx),
++                    line_edit::Key::Enter => this.keep_offline_name(cx),
++                    _ => {}
++                }
++                cx.stop_propagation();
++                cx.notify();
++            }));
++        let field = line_edit::mouse(field, cx, |this| &mut this.offline_input);
++        let button = keyboard(
++            div()
++                .id("offline-save")
++                .flex()
++                .items_center()
++                .justify_center()
++                .h(px(44.))
++                .px(px(20.))
++                .rounded(px(radius::ROW))
++                .bg(white(0.10))
++                .cursor_pointer()
++                .hover(|s| s.bg(white(0.18)))
++                .font_family(horizon_theme::glass::FONT)
++                .text_size(px(14.))
++                .font_weight(FontWeight::SEMIBOLD)
++                .text_color(white(ink::FULL))
++                .child(tr("Use this name")),
++            &t,
++        )
++        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.keep_offline_name(cx)));
++        div()
++            .flex()
++            .flex_col()
++            .gap(px(16.))
++            .rounded(px(16.))
++            .bg(white(0.045))
++            .border_1()
++            .border_color(white(ui::edge::REST))
++            .p(px(24.))
++            .child(
++                div()
++                    .font_family(horizon_theme::glass::DISPLAY_FONT)
++                    .font_weight(FontWeight::SEMIBOLD)
++                    .text_size(px(20.))
++                    .line_height(px(25.))
++                    .text_color(white(ink::FULL))
++                    .child(tr("Play offline")),
++            )
++            .child(
++                ui::text(14., FontWeight::NORMAL, 0.65)
++                    .line_height(px(21.))
++                    .child(tr(
++                        "No Microsoft account is needed. Single-player, LAN and offline-mode \
++                         servers all work with this name; the game plays as its offline UUID.",
++                    )),
++            )
++            .child(
++                div()
++                    .flex()
++                    .items_center()
++                    .gap(px(8.))
++                    .child(field)
++                    .child(button),
++            )
++            .child(
++                ui::text(13., FontWeight::NORMAL, 0.55)
++                    .line_height(px(19.))
++                    .child(format!(
++                        "{} ({})",
++                        summary,
++                        tr("3 to 16 letters, digits or _")
++                    )),
++            )
++    }
++
++    /// Keeps the typed offline name and plays as it; an invalid one is left in the field.
++    fn keep_offline_name(&mut self, cx: &mut Context<Self>) {
++        let name = self.offline_input.text().trim().to_string();
++        if account::valid_offline_name(&name) {
++            if self
++                .accounts
++                .play_as(account::Player::Offline(name))
++                .is_ok()
++            {
++                let _ = self.accounts.save();
++                self.offline_input.set(String::new());
++            }
++        }
++        cx.notify();
++    }
+ }
+diff --git a/launcher/src/horizon_bundle.rs b/launcher/src/horizon_bundle.rs
+new file mode 100644
+index 0000000..0e60bdf
+--- /dev/null
++++ b/launcher/src/horizon_bundle.rs
+@@ -0,0 +1,107 @@
++//! H-RUST offline package: the game build ships beside the launcher.
++//!
++//! Unzipping the package and opening the launcher is all a player does. On start, every version
++//! bundled in `data/versions` next to the executable is copied into the launcher data directory
++//! once (it is skipped when `.installed` is already there), the first of them is selected, and
++//! automatic version installs are turned off: this build follows its own package, not upstream.
++//!
++//! Nothing here touches account, session or network state; it only lays files down.
++
++use std::path::{Path, PathBuf};
++
++/// The marker the launcher writes into a version directory it may start (`backend::COMPLETE`).
++const COMPLETE: &str = ".installed";
++
++fn exe_dir() -> Option<PathBuf> {
++    std::env::current_exe()
++        .ok()
++        .and_then(|exe| exe.parent().map(Path::to_path_buf))
++}
++
++/// Copies `from` into `to` recursively: files, directories, and the permissions that make the
++/// game binaries executable.
++fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
++    std::fs::create_dir_all(to)?;
++    for entry in std::fs::read_dir(from)?.flatten() {
++        let source = entry.path();
++        let target = to.join(entry.file_name());
++        let kind = entry.file_type()?;
++        if kind.is_dir() {
++            copy_tree(&source, &target)?;
++        } else if kind.is_symlink() {
++            // The package keeps no symlinks; anything that is one is copied as its target so the
++            // game never depends on where it was unpacked.
++            match std::fs::canonicalize(&source) {
++                Ok(real) if real.is_dir() => copy_tree(&real, &target)?,
++                Ok(real) => {
++                    std::fs::copy(&real, &target)?;
++                }
++                Err(_) => {}
++            }
++        } else {
++            std::fs::copy(&source, &target)?;
++        }
++    }
++    Ok(())
++}
++
++/// Installs the bundled versions, once each, into the launcher data directory.
++pub fn ensure() {
++    let Some(root) = exe_dir() else {
++        return;
++    };
++    let bundled = root.join("data").join("versions");
++    if !bundled.is_dir() {
++        return;
++    }
++    let versions = horizon_launcher::backend::data_dir().join("versions");
++    // A package run with HORIZON_LAUNCHER_HOME pointing at itself has nothing to copy.
++    if same_dir(&bundled, &versions) {
++        return;
++    }
++    let Ok(entries) = std::fs::read_dir(&bundled) else {
++        return;
++    };
++    let mut names: Vec<String> = entries
++        .flatten()
++        .filter(|e| e.path().is_dir())
++        .filter_map(|e| e.file_name().into_string().ok())
++        .collect();
++    names.sort();
++    let mut ready: Vec<String> = Vec::new();
++    for name in names {
++        let target = versions.join(&name);
++        if !target.join(COMPLETE).is_file() {
++            if copy_tree(&bundled.join(&name), &target).is_err() {
++                continue;
++            }
++            let _ = std::fs::write(target.join(COMPLETE), b"");
++        }
++        ready.push(name);
++    }
++    if ready.is_empty() {
++        return;
++    }
++    let mut settings = horizon_launcher::backend::Settings::load();
++    let mut changed = false;
++    if settings.selected.is_none() {
++        settings.selected = ready.first().cloned();
++        changed = true;
++    }
++    // This package ships its game build: never chase upstream Nightlies on its own.
++    if settings.install_new_versions.is_none() {
++        settings.install_new_versions = Some(false);
++        changed = true;
++    }
++    if changed {
++        let _ = settings.save();
++    }
++}
++
++/// Whether two paths name the same directory, without requiring either to exist as given.
++fn same_dir(a: &Path, b: &Path) -> bool {
++    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
++        (Ok(a), Ok(b)) => a == b,
++        _ => a == b,
++    }
++}
+diff --git a/launcher/src/launcher_render.rs b/launcher/src/launcher_render.rs
+index af3c5da..bc57022 100644
+--- a/launcher/src/launcher_render.rs
++++ b/launcher/src/launcher_render.rs
+@@ -54,6 +54,7 @@ impl Render for Launcher {
+         self.mods.note_focus(window);
+         self.github.note_focus(window);
+         self.args_focused = self.args_focus.is_focused(window);
++        self.offline_focused = self.offline_focus.is_focused(window);
+         self.proxy_focused = self.proxy_focus.is_focused(window);
+         self.settings_query_focused = self.settings_query_focus.is_focused(window);
+         let size = window.viewport_size();
 diff --git a/launcher/src/launcher_setup.rs b/launcher/src/launcher_setup.rs
-index 1b5a39e..300e6c5 100644
+index 1b5a39e..6c7ce74 100644
 --- a/launcher/src/launcher_setup.rs
 +++ b/launcher/src/launcher_setup.rs
-@@ -519,7 +519,8 @@ impl Launcher {
+@@ -187,6 +187,9 @@ impl Launcher {
+             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
+             args_focused: false,
+             args_focus: cx.focus_handle(),
++            offline_input: line_edit::LineEdit::new(String::new(), 16, 16),
++            offline_focused: false,
++            offline_focus: cx.focus_handle(),
+             proxy_input: line_edit::LineEdit::new(
+                 settings.proxy.clone().unwrap_or_default(),
+                 256,
+@@ -519,7 +522,8 @@ impl Launcher {
      }
  
      pub(crate) fn launcher_download_available(&self) -> bool {
@@ -354,6 +808,38 @@ index 1b5a39e..300e6c5 100644
      }
  
      pub(crate) fn update_launcher(&mut self, release: Release) {
+diff --git a/launcher/src/main.rs b/launcher/src/main.rs
+index cccf9e9..9756728 100644
+--- a/launcher/src/main.rs
++++ b/launcher/src/main.rs
+@@ -29,6 +29,7 @@ mod export_page;
+ mod frame;
+ mod game_tools;
+ mod github_mods_page;
++mod horizon_bundle;
+ mod glass_account;
+ mod glass_home;
+ mod glass_home_lists;
+@@ -494,6 +495,10 @@ struct Launcher {
+     args_input: line_edit::LineEdit,
+     args_focused: bool,
+     args_focus: FocusHandle,
++    /// The Account card's offline name field: what the player typed, focus, and its handle.
++    offline_input: line_edit::LineEdit,
++    offline_focused: bool,
++    offline_focus: FocusHandle,
+     /// Settings' Proxy field, the same way (`proxy`).
+     proxy_input: line_edit::LineEdit,
+     proxy_focused: bool,
+@@ -667,6 +672,8 @@ fn menus() -> Vec<Menu> {
+ mod startup;
+ 
+ fn main() {
++    // H-RUST: install the game build shipped beside the launcher, then select it (once).
++    horizon_bundle::ensure();
+     startup::run();
+ }
+ 
 diff --git a/launcher/src/switch_page.rs b/launcher/src/switch_page.rs
 index 4062a2e..1628ee0 100644
 --- a/launcher/src/switch_page.rs
