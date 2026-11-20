@@ -89,7 +89,6 @@ jobs:
             -o horizon-linux-x86_64.tar.gz \
             https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz
           ls -lh horizon-linux-x86_64.tar.gz
-          tar -tzf horizon-linux-x86_64.tar.gz | head -20
 
       - name: Verify nightly still matches the pinned commit
         env:
