@@ -56,6 +56,16 @@ echo "==> 把游戏装成 $TAG"
 : > "$ROOT/data/versions/$TAG/.installed"
 printf '{"revision":"%s"}\n' "$COMMIT" > "$ROOT/data/versions/$TAG/developer.json"
 
+echo "==> 确认官方 client 仍然支持离线单人"
+CLIENT="$ROOT/data/versions/$TAG/horizon-client"
+[[ -f "$CLIENT" ]] || { echo "错误：版本目录里没有 horizon-client" >&2; exit 1; }
+chmod +x "$CLIENT"
+if ! "$CLIENT" --launch-api 2>/dev/null | grep -q -- '--developer-single-player'; then
+  echo "错误：这个 client 不再提供 --developer-single-player，离线方案失效" >&2
+  exit 1
+fi
+echo "    OK：--developer-single-player 存在"
+
 cat > "$ROOT/run-offline.sh" <<EOF
 #!/usr/bin/env bash
 # 打开 Horizon 离线启动器。首次运行会把游戏装进启动器数据目录。

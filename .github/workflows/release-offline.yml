@@ -114,14 +114,6 @@ jobs:
       - name: Assemble the offline package
         run: bash tools/ci/make-offline-package.sh launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package
 
-      - name: Check the official client advertises offline single-player
-        run: |
-          set -euo pipefail
-          CLIENT=$(find package -maxdepth 4 -type f -name 'horizon-client' | head -1)
-          chmod +x "$CLIENT"
-          "$CLIENT" --launch-api | grep -q -- '--developer-single-player' \
-            || { echo '::error::this client no longer supports offline single-player'; exit 1; }
-
       - name: Create release notes
         run: |
           set -euo pipefail
