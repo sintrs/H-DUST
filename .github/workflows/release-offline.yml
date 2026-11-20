@@ -1,12 +1,11 @@
-name: Auto release (upstream nightly + offline launcher)
+name: Release offline (offline launcher + upstream game)
 
-# 游戏本体不编译：直接复制官方 nightly 包。
-# 启动器用上游最新源码：反向合并 1e789800af 恢复离线名字，再打 H-RUST 补丁。
-# 版本号直接沿用上游 nightly-YYYY-MM-DD-xxxxxxx，不向上游提 PR。
-
+# 出「离线」：游戏本体复制上游 nightly 官方包，启动器用已验证可编译的
+# gerdaroot/Horizon-Offline-Launcher 源码（GATE_OPEN=true，允许离线开局）。
+# 与 release-game.yml 完全独立：独立 state、独立 tag 后缀 -offline。
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/35 * * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -18,12 +17,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: h-rust-auto-release
+  group: h-rust-release-offline
   cancel-in-progress: false
 
 jobs:
   monitor:
-    name: Check upstream version
+    name: Check upstream nightly
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -31,7 +30,6 @@ jobs:
       nightly_commit: ${{ steps.check.outputs.nightly_commit }}
       game_ref: ${{ steps.check.outputs.game_ref }}
       version_tag: ${{ steps.check.outputs.version_tag }}
-      launcher_version: ${{ steps.check.outputs.launcher_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,9 +41,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${FORCE}" == "true" ]]; then
-            python3 tools/ci/monitor_upstream.py --state state/upstream.json --force
+            python3 tools/ci/monitor_upstream.py --state state/offline.json --force
           else
-            python3 tools/ci/monitor_upstream.py --state state/upstream.json
+            python3 tools/ci/monitor_upstream.py --state state/offline.json
           fi
 
       - name: Commit the new state
@@ -54,21 +52,20 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add state/upstream.json
-          git commit -m "chore: track upstream ${{ steps.check.outputs.version_tag }}"
+          git add state/offline.json
+          git commit -m "chore: track upstream offline ${{ steps.check.outputs.version_tag }}"
+          git pull --rebase origin main
           git push
 
   build:
-    name: Patch launcher and publish
+    name: Build offline launcher and publish
     needs: monitor
     if: needs.monitor.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     env:
-      GAME_REF: ${{ needs.monitor.outputs.game_ref }}
-      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}
+      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}-offline
       NIGHTLY_COMMIT: ${{ needs.monitor.outputs.nightly_commit }}
-      LAUNCHER_VERSION: ${{ needs.monitor.outputs.launcher_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -99,34 +96,18 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Clone upstream source with full history
+      - name: Clone offline launcher source
         run: |
           set -euo pipefail
-          git clone https://github.com/horizon-rust/horizon.git launcher-src
-          git -C launcher-src checkout "${GAME_REF}"
-          echo "source: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
-
-      - name: Revert the commit that removed offline names
-        run: |
-          set -euo pipefail
-          cd launcher-src
-          git revert --no-commit 1e789800af || true
-          # Conflicts: take the pre-removal (theirs) side. Most are language files.
-          git diff --name-only --diff-filter=U -z | xargs -0 -r git checkout --theirs --
-          git add -A
-          git revert --quit || true
-          grep -q 'offline_selected' launcher/src/account.rs \
-            || { echo '::error::offline names were not restored'; exit 1; }
-          grep -q 'dev_offline' launcher/src/backend.rs \
-            || { echo '::error::dev_offline was not restored'; exit 1; }
-
-      - name: Apply H-RUST offline defaults
-        run: python3 tools/ci/patch_launcher_offline.py launcher-src
+          git clone https://github.com/gerdaroot/Horizon-Offline-Launcher.git launcher-src
+          echo "launcher: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
+          grep -q 'GATE_OPEN: bool = true' launcher-src/launcher/src/account.rs \
+            || { echo '::error::offline gate is not open in the launcher source'; exit 1; }
 
       - name: Build launcher only
         run: bash tools/ci/build-linux.sh launcher-src dist launcher
 
-      - name: Check the skeleton nightly still matches the pinned commit
+      - name: Verify nightly still matches the pinned commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -148,16 +129,15 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Version copied verbatim from upstream: \`${VERSION_TAG}\`"
+            echo "Offline launcher build based on upstream nightly \`${NIGHTLY_COMMIT}\`."
             echo
             echo "| Part | Source |"
             echo "|---|---|"
-            echo "| Game binaries | upstream nightly package, **copied unchanged** (no rebuild) |"
-            echo "| Launcher | upstream source \`${GAME_REF}\` + reverse merge of \`1e789800af\` + H-RUST offline defaults |"
+            echo "| Game binaries | upstream nightly package, copied unchanged |"
+            echo "| Launcher | gerdaroot/Horizon-Offline-Launcher, \`GATE_OPEN=true\` |"
             echo
-            echo "The launcher can play with an offline name and no Microsoft account."
-            echo "Run with \`HORIZON_LAUNCHER_NO_SELF_UPDATE=1\`; self-update is also disabled at build time."
-          } > release-notes.md
+            echo "Runs with \`HORIZON_LAUNCHER_NO_SELF_UPDATE=1\` to avoid being replaced by a signed update."
+          } > release-notes-offline.md
 
       - name: Tag and publish
         env:
@@ -166,13 +146,9 @@ jobs:
           set -euo pipefail
           ASSET=$(find package -maxdepth 1 -name '*.tar.gz' | head -1)
           [[ -n "$ASSET" ]] || { echo '::error::no package produced'; exit 1; }
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag "$VERSION_TAG"
-          git push origin "$VERSION_TAG"
           gh release create "$VERSION_TAG" "$ASSET" \
             --title "Horizon offline · $VERSION_TAG" \
-            --notes-file release-notes.md
+            --notes-file release-notes-offline.md
 
       - uses: actions/upload-artifact@v4
         with:

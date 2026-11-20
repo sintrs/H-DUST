@@ -1,0 +1,123 @@
+name: Release game (upstream nightly verbatim)
+
+# 出「本体」：游戏二进制直接复制上游 nightly 官方包，一个字节都不重编。
+# 版本号用 nightly-YYYY-MM-DD-xxxxxxx，避免与离线包 tag 冲突再加 -game 后缀。
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '忽略 state，按当前上游 nightly 强制重建一次'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h-rust-release-game
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check upstream nightly
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      nightly_commit: ${{ steps.check.outputs.nightly_commit }}
+      game_ref: ${{ steps.check.outputs.game_ref }}
+      version_tag: ${{ steps.check.outputs.version_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare with stored upstream version
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [[ "${FORCE}" == "true" ]]; then
+            python3 tools/ci/monitor_upstream.py --state state/game.json --force
+          else
+            python3 tools/ci/monitor_upstream.py --state state/game.json
+          fi
+
+      - name: Commit the new state
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state/game.json
+          git commit -m "chore: track upstream game ${{ steps.check.outputs.version_tag }}"
+          git pull --rebase origin main
+          git push
+
+  publish:
+    name: Copy official nightly package
+    needs: monitor
+    if: needs.monitor.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      NIGHTLY_COMMIT: ${{ needs.monitor.outputs.nightly_commit }}
+      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}-game
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to overwrite an existing tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION_TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${VERSION_TAG} already exists; nothing was overwritten"
+            exit 1
+          fi
+
+      - name: Download official nightly package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H 'Accept: application/octet-stream' \
+            -o horizon-linux-x86_64.tar.gz \
+            https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz
+          ls -lh horizon-linux-x86_64.tar.gz
+          tar -tzf horizon-linux-x86_64.tar.gz | head -20
+
+      - name: Verify nightly still matches the pinned commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/horizon-rust/horizon/releases/tags/nightly \
+            | jq -r '.body' > upstream-nightly.txt
+          grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
+            || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
+
+      - name: Publish verbatim copy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Upstream nightly copied verbatim; no binaries rebuilt."
+            echo
+            echo "| Part | Source |"
+            echo "|---|---|"
+            echo "| All binaries / wasm / exporters | official nightly package, unchanged |"
+            echo
+            echo "Use the \`-offline\` release if you want the offline launcher."
+          } > release-notes-game.md
+          gh release create "$VERSION_TAG" horizon-linux-x86_64.tar.gz \
+            --title "Horizon game · $VERSION_TAG" \
+            --notes-file release-notes-game.md
