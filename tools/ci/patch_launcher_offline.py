@@ -18,10 +18,12 @@ client 本身**原生支持离线身份连服务器**：`connect_remote_session`
    「默认开，设 0 才关」——双击就是离线版，不需要包装脚本导环境变量。
 3. `backend::self_update_allowed()` 恒为 false —— 否则会提示更新、并把官方包下载
    回来覆盖掉这个二进制，离线就没了。
-4. 新文件 `launcher/src/rust_offline_bootstrap.rs`：启动时把**与二进制同级**的
-   `data/versions/*` 装进启动器数据目录并选中。这样解压后双击二进制即可，
-   不需要任何安装脚本。
-5. `main.rs`：`mod rust_offline_bootstrap;` + 在 `startup::run()` 之前调用。
+4. `launcher_setup.rs::launcher_download_available()` 恒为 false —— 版本页不再出现
+   「有新启动器可下载」的提示。
+5. 新文件 `launcher/src/rust_offline_bootstrap.rs`：启动时把**与二进制同级**的
+   `data/versions/*` 装进启动器数据目录并选中，并关掉「自动装新版」。
+   这样解压后双击二进制即可，不需要任何安装脚本。
+6. `main.rs`：`mod rust_offline_bootstrap;` + 在 `startup::run()` 之前调用。
 
 `require_capability()` 不动：它只探测 client 的 `--launch-api`，client 没改，仍通过。
 """
@@ -73,8 +75,17 @@ pub fn ensure() {
             continue;
         }
         let mut settings = horizon_launcher::backend::Settings::load();
+        let mut changed = false;
         if settings.selected.is_none() {
             settings.selected = Some(tag);
+            changed = true;
+        }
+        // Pinned package: never chase upstream versions on its own.
+        if settings.install_new_versions.is_none() {
+            settings.install_new_versions = Some(false);
+            changed = true;
+        }
+        if changed {
             let _ = settings.save();
         }
     }
@@ -120,8 +131,9 @@ def main() -> None:
     offline = root / "launcher/src/developer_offline.rs"
     backend = root / "launcher/src/backend.rs"
     main_rs = root / "launcher/src/main.rs"
+    setup = root / "launcher/src/launcher_setup.rs"
     bootstrap = root / "launcher/src/rust_offline_bootstrap.rs"
-    for p in (offline, backend, main_rs):
+    for p in (offline, backend, main_rs, setup):
         if not p.is_file():
             fail(f"找不到 {p}")
 
@@ -193,6 +205,16 @@ def main() -> None:
 
     # 5) main() 里挂上自装。
     edit(
+        setup,
+        r"    pub\(crate\) fn launcher_download_available\(&self\) -> bool \{\n"
+        r"        !backend::package_managed_launcher\(\)\n    \}",
+        "    pub(crate) fn launcher_download_available(&self) -> bool {\n"
+        f"        // {MARK}：本包不提示更新、不提供「下载新启动器」。\n"
+        "        false\n    }",
+        "launcher_download_available()",
+    )
+
+    edit(
         main_rs,
         r"fn main\(\) \{\n    startup::run\(\);\n\}",
         "mod rust_offline_bootstrap;\n"
@@ -229,6 +251,9 @@ def main() -> None:
         ("HORIZON_LAUNCHER_NO_SELF_UPDATE\"))" not in back, "self_update_allowed() 未关掉"),
         (MARK in back, "backend.rs 补丁标记缺失"),
         (MARK in boot and "pub fn ensure()" in boot, "自装模块缺失"),
+        ("launcher_download_available" in setup.read_text(encoding="utf-8")
+         and "!backend::package_managed_launcher()" not in setup.read_text(encoding="utf-8"),
+         "launcher_download_available() 未关掉"),
         ("rust_offline_bootstrap::ensure();" in entry, "main() 未调用自装"),
         ("startup::run();" in entry, "main() 被破坏"),
     ]
