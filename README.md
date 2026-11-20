@@ -144,8 +144,9 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 2. 与 `state/upstream.json` 比较。没有变化就什么也不做；有变化就提交新的 state；
 3. 用**上游原样的版本号**打 tag：`nightly-YYYY-MM-DD-xxxxxxx`，
    游戏源码钉在不可变的 `nightly-source/YYYY-MM-DD-xxxxxxx` tag；
-4. 启动器仍编译 `gerdaroot/Horizon-Offline-Launcher` 默认分支（保留 `GATE_OPEN = true`），
-   不向上游提合并，也不改上游源码；
+4. 启动器用**上游最新源码**：反向合并 `1e789800af`（上游删除离线名字那次提交），
+   再用 `tools/ci/patch_launcher_offline.py` 打开 `dev_offline`、关掉自更新；
+   游戏本体不编译，直接复制官方 nightly 包；
 5. 打包时二次校验官方 `nightly` 骨架仍是同一个 commit，防止构建中途上游换版；
 6. 发布 GitHub Release，上传 `horizon-linux-x86_64-offline.tar.gz`。
 
@@ -166,7 +167,8 @@ git add -A && git commit -m '...' && git push
 - 仓库保持很小，只有脚本、监控 state 和 workflow（当前约几十 KB）。
 - 每次构建时 Actions 现场 clone 上游和离线分支，源码天然是新的。
 - `state/upstream.json` 由 Actions 自动提交，手工只用于排查或回退，别当成主编辑对象。
-- `build-linux.yml` 保留作手动产物构建；`auto-release.yml` 负责定时跟版和发布。
+- `build-linux.yml` 保留作手动构建备用；正式产物由 `auto-release.yml` 生成：
+  **只编启动器，游戏二进制原样复制官方 nightly 包**。
 - 当前**没有配置 `RELEASE_SIGNING_KEY`**，所以发布的是可直接使用的产物，
   不是启动器可自动更新的签名通道。运行时请带
   `HORIZON_LAUNCHER_NO_SELF_UPDATE=1`，防止被官方/离线分支的签名更新覆盖。

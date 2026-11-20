@@ -1,9 +1,8 @@
-name: Auto release (copy upstream nightly version)
+name: Auto release (upstream nightly + offline launcher)
 
-# 监控 horizon-rust/horizon 的 nightly + launcher 版本。
-# 发现上游换了 nightly，就用同一个版本号（nightly-YYYY-MM-DD-xxxxxxx）构建并发 release。
-# 游戏源码钉在上游不可变的 nightly-source tag；启动器仍用 gerdaroot 的离线分支。
-# 本仓库不向上游提任何合并，也不修改上游源码。
+# 游戏本体不编译：直接复制官方 nightly 包。
+# 启动器用上游最新源码：反向合并 1e789800af 恢复离线名字，再打 H-RUST 补丁。
+# 版本号直接沿用上游 nightly-YYYY-MM-DD-xxxxxxx，不向上游提 PR。
 
 on:
   schedule:
@@ -29,9 +28,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       changed: ${{ steps.check.outputs.changed }}
-      nightly_date: ${{ steps.check.outputs.nightly_date }}
       nightly_commit: ${{ steps.check.outputs.nightly_commit }}
-      nightly_short: ${{ steps.check.outputs.nightly_short }}
       game_ref: ${{ steps.check.outputs.game_ref }}
       version_tag: ${{ steps.check.outputs.version_tag }}
       launcher_version: ${{ steps.check.outputs.launcher_version }}
@@ -62,11 +59,11 @@ jobs:
           git push
 
   build:
-    name: Build and publish
+    name: Patch launcher and publish
     needs: monitor
     if: needs.monitor.outputs.changed == 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 120
     env:
       GAME_REF: ${{ needs.monitor.outputs.game_ref }}
       VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}
@@ -95,41 +92,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config jq \
-            libasound2-dev libudev-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libx11-xcb-dev \
             libfontconfig1-dev libvulkan-dev
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-          components: rust-src
 
-      - name: Get pinned upstream game source
+      - name: Clone upstream source with full history
         run: |
           set -euo pipefail
-          git clone --depth 1 --no-tags --branch "${GAME_REF}" \
-            https://github.com/horizon-rust/horizon.git game-src \
-            || { git clone --no-tags https://github.com/horizon-rust/horizon.git game-src \
-                 && git -C game-src checkout "${GAME_REF}"; }
-          echo "game: $(git -C game-src log -1 --format='%h %ad %s' --date=short)"
-          echo "HORIZON_GAME_BUILD_ID=$(git -C game-src rev-parse HEAD)" >> "$GITHUB_ENV"
+          git clone --no-tags https://github.com/horizon-rust/horizon.git launcher-src
+          git -C launcher-src checkout "${GAME_REF}"
+          echo "source: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
 
-      - name: Get offline launcher source
+      - name: Revert the commit that removed offline names
         run: |
           set -euo pipefail
-          git clone --depth 1 --no-tags \
-            https://github.com/gerdaroot/Horizon-Offline-Launcher.git launcher-src
-          echo "launcher: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
-          grep -q 'GATE_OPEN: bool = true' launcher-src/launcher/src/account.rs \
-            || { echo '::error::launcher source lost GATE_OPEN = true'; exit 1; }
+          cd launcher-src
+          git revert --no-commit 1e789800af || true
+          # Conflicts: take the pre-removal (theirs) side. Most are language files.
+          git diff --name-only --diff-filter=U -z | xargs -0 -r git checkout --theirs --
+          git add -A
+          git revert --quit || true
+          grep -q 'offline_selected' launcher/src/account.rs \
+            || { echo '::error::offline names were not restored'; exit 1; }
+          grep -q 'dev_offline' launcher/src/backend.rs \
+            || { echo '::error::dev_offline was not restored'; exit 1; }
 
-      - name: Build launcher
+      - name: Apply H-RUST offline defaults
+        run: python3 tools/ci/patch_launcher_offline.py launcher-src
+
+      - name: Build launcher only
         run: bash tools/ci/build-linux.sh launcher-src dist launcher
-
-      - name: Build game binaries
-        run: bash tools/ci/build-linux.sh game-src dist game
 
       - name: Check the skeleton nightly still matches the pinned commit
         env:
@@ -144,7 +139,7 @@ jobs:
           grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
             || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
 
-      - name: Package with official nightly skeleton
+      - name: Put our launcher into the untouched upstream package
         run: |
           bash tools/ci/make-linux-package.sh dist package \
             "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz"
@@ -157,14 +152,11 @@ jobs:
             echo
             echo "| Part | Source |"
             echo "|---|---|"
-            echo "| Game | \`horizon-rust/horizon\` @ \`${GAME_REF}\` |"
-            echo "| Launcher | \`gerdaroot/Horizon-Offline-Launcher\` @ \`$(git -C launcher-src rev-parse HEAD)\` |"
-            echo "| Upstream launcher | ${LAUNCHER_VERSION} (informational; offline launcher keeps its own numbering) |"
+            echo "| Game binaries | upstream nightly package, **copied unchanged** (no rebuild) |"
+            echo "| Launcher | upstream source \`${GAME_REF}\` + reverse merge of \`1e789800af\` + H-RUST offline defaults |"
             echo
-            echo "Install: \`tar -xzf horizon-linux-x86_64-offline.tar.gz\` then"
-            echo "\`bash tools/ci/install-version-offline.sh ./horizon-linux-x86_64 nightly\`."
-            echo
-            echo "Run with \`HORIZON_LAUNCHER_NO_SELF_UPDATE=1\` so this build is not replaced by a signed upstream one."
+            echo "The launcher can play with an offline name and no Microsoft account."
+            echo "Run with \`HORIZON_LAUNCHER_NO_SELF_UPDATE=1\`; self-update is also disabled at build time."
           } > release-notes.md
 
       - name: Tag and publish
