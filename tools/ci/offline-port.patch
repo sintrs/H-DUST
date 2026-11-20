@@ -1,3 +1,29 @@
+diff --git a/launcher/Cargo.lock b/launcher/Cargo.lock
+index 461b5a5..9cbbb5a 100644
+--- a/launcher/Cargo.lock
++++ b/launcher/Cargo.lock
+@@ -3100,7 +3100,7 @@ version = "0.1.0"
+ 
+ [[package]]
+ name = "horizon-launcher"
+-version = "0.2.0"
++version = "2.4.4"
+ dependencies = [
+  "base64 0.22.1",
+  "cap-fs-ext",
+diff --git a/launcher/Cargo.toml b/launcher/Cargo.toml
+index f32760e..ee38957 100644
+--- a/launcher/Cargo.toml
++++ b/launcher/Cargo.toml
+@@ -1,6 +1,7 @@
+ [package]
+ name = "horizon-launcher"
+-version = "0.2.0"
++# 离线版自己的版本号：与上游 0.2.x、其它离线包区分开。
++version = "2.4.4"
+ edition = "2021"
+ license = "LGPL-3.0-or-later"
+ description = "Downloads, prepares and starts Horizon builds"
 diff --git a/launcher/src/account.rs b/launcher/src/account.rs
 index b4172bf..5ecb7fe 100644
 --- a/launcher/src/account.rs

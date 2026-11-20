@@ -35,7 +35,7 @@ cd horizon-offline-linux-x86_64
 ### 自检
 
 ```bash
-./horizon-launcher --version    # horizon-launcher 0.2.0 = 打过补丁的
+./horizon-launcher --version    # horizon-launcher 2.4.4 = 打过补丁的
 ./horizon-launcher account list # * YourName  offline  有这行就对了
 ```
 
@@ -63,7 +63,8 @@ git clone https://github.com/sintrs/H-RUST.git && cd H-RUST
 git add -A && git commit -m '...' && git push
 ```
 
-补丁是唯一的真相，全部改动都在 `launcher/src`，`crates/` 不动。
+补丁是唯一的真相：`launcher/src` 下的代码，加上 `launcher/Cargo.toml` 与 `launcher/Cargo.lock`
+里的版本号（`2.4.4`，`--locked` 构建要求两者一致）。`crates/` 不动。
 
 改补丁**不要手改 hunk 计数**：
 

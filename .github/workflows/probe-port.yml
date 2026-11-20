@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           cd src/launcher
           set +e
-          cargo check --message-format=short > /tmp/check.log 2>&1
+          cargo check --locked --message-format=short > /tmp/check.log 2>&1
           CODE=$?
           set -e
           echo "exit=${CODE}"
