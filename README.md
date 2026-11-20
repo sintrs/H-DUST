@@ -139,10 +139,23 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 
 拆成两个互不干扰的 workflow，各自监控、各自 state、各自 tag 后缀：
 
+<<<<<<< HEAD
 | Workflow | 产物 | tag | state |
 |---|---|---|---|
 | `.github/workflows/release-game.yml` | 官方 nightly 包原样复制，不编译 | `nightly-YYYY-MM-DD-xxxxxxx-game` | `state/game.json` |
 | `.github/workflows/release-offline.yml` | 离线启动器（上游源码编）+ 官方游戏，单人/多人/LAN 全开 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
+=======
+1. `tools/ci/monitor_upstream.py` 从 `horizon-rust/horizon/releases` 取最新 `nightly`
+   和 `launcher@X.Y.Z`，解析 `Nightly YYYY-MM-DD · xxxxxxx`；
+2. 与 `state/upstream.json` 比较。没有变化就什么也不做；有变化就提交新的 state；
+3. 用**上游原样的版本号**打 tag：`nightly-YYYY-MM-DD-xxxxxxx`，
+   游戏源码钉在不可变的 `nightly-source/YYYY-MM-DD-xxxxxxx` tag；
+4. 启动器用**上游最新源码**：反向合并 `1e789800af`（上游删除离线名字那次提交），
+   再用 `tools/ci/patch_launcher_offline.py` 打开 `dev_offline`、关掉自更新；
+   游戏本体不编译，直接复制官方 nightly 包；
+5. 打包时二次校验官方 `nightly` 骨架仍是同一个 commit，防止构建中途上游换版；
+6. 发布 GitHub Release，上传 `horizon-linux-x86_64-offline.tar.gz`。
+>>>>>>> 6d747d0 (ci: use upstream game package and build offline launcher from reverted upstream source)
 
 两者都用 `tools/ci/monitor_upstream.py` 读 `horizon-rust/horizon/releases`，
 解析 `Nightly YYYY-MM-DD · xxxxxxx`，与各自 state 比较；没变化就跳过，有变化才构建发布。
@@ -202,11 +215,17 @@ git add -A && git commit -m '...' && git push
 
 - 仓库保持很小，只有脚本、监控 state 和 workflow（当前约几十 KB）。
 - 每次构建时 Actions 现场 clone 上游和离线分支，源码天然是新的。
+<<<<<<< HEAD
 - `state/game.json` 和 `state/offline.json` 由各自的 Actions 自动提交，
   手工只用于排查或回退，别当成主编辑对象。
 - `build-linux.yml` 保留作手动构建备用；正式产物由两条 `release-*.yml` 生成：
   **只编启动器，游戏二进制原样复制官方 nightly 包**。
 - 旧的 `auto-release.yml` 已停用（整文件回退方案编译不过，方案见上一节）。
+=======
+- `state/upstream.json` 由 Actions 自动提交，手工只用于排查或回退，别当成主编辑对象。
+- `build-linux.yml` 保留作手动构建备用；正式产物由 `auto-release.yml` 生成：
+  **只编启动器，游戏二进制原样复制官方 nightly 包**。
+>>>>>>> 6d747d0 (ci: use upstream game package and build offline launcher from reverted upstream source)
 - 当前**没有配置 `RELEASE_SIGNING_KEY`**，所以发布的是可直接使用的产物，
   不是启动器可自动更新的签名通道。运行时请带
   `HORIZON_LAUNCHER_NO_SELF_UPDATE=1`，防止被官方/离线分支的签名更新覆盖。

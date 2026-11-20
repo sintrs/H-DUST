@@ -5,8 +5,13 @@
 #   - 启动器：默认用官方包里的二进制；给了第 5 个参数就用自编的（打了离线补丁）覆盖。
 #   - 游戏包：官方 nightly，原样复制，不编译。
 #
-# 启动器补丁只做一件事：不再注入 --developer-single-player，让 client 走正常启动
-# 路径，从而单人、多人、LAN 全部可用，身份是 client 原生的 offline_uuid(--name)。
+# 启动器补丁做三件事（见 patch_launcher_offline.py）：不注入 --developer-single-player、
+# 离线默认开启、永不自我替换。于是**双击/菜单直接打开就是离线版**，不需要环境变量。
+# client 走正常启动路径，单人、多人、LAN 全部可用，身份是 client 原生的 offline_uuid(--name)。
+#
+# 包里没有安装脚本：解压后直接打开 horizon-launcher，它自己把随包的 data/versions
+# 装进启动器数据目录并选中（补丁里的 rust_offline_bootstrap），名字改同目录的
+# offline-name.txt。
 #
 # 用法:
 #   bash make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录> [自编的 horizon-launcher]
@@ -75,43 +80,32 @@ else
   echo "    注意：client 不再声明该选项；本方案不依赖它，继续"
 fi
 
-cat > "$ROOT/run-offline.sh" <<EOF
-#!/usr/bin/env bash
-# 打开 Horizon 离线启动器。首次运行会把游戏装进启动器数据目录。
-set -euo pipefail
-here=\$(cd "\$(dirname "\$0")" && pwd)
-tag=$TAG
-home=\${HORIZON_LAUNCHER_HOME:-\${XDG_DATA_HOME:-\$HOME/.local/share}/horizon-launcher}
-mkdir -p "\$home/versions"
-if [ ! -d "\$home/versions/\$tag" ]; then
-  echo "Installing \$tag into \$home ..."
-  mkdir -p "\$home/versions/\$tag"
-  (cd "\$here/data/versions/\$tag" && tar -cf - .) | (cd "\$home/versions/\$tag" && tar -xmf -)
-fi
-export HORIZON_LAUNCHER_HOME="\$home"
-export HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1
-export HORIZON_LAUNCHER_NO_SELF_UPDATE=1
-"\$here/horizon-launcher" settings selected-version "\$tag" >/dev/null 2>&1 || true
-exec "\$here/horizon-launcher" "\$@"
-EOF
-chmod +x "$ROOT/run-offline.sh"
+# 离线名：改这一行就行（3-16 位字母/数字/下划线）。启动器读它，用 --name 传给 client。
+printf 'Player\n' > "$ROOT/offline-name.txt"
 
 cat > "$ROOT/PLAY-OFFLINE.txt" <<EOF
 Horizon offline package
 =======================
 
 Game build: upstream nightly $SHORT (copied verbatim, not rebuilt)
-Launcher:   built from the same upstream source, with the offline patch applied
+Launcher:   built from the same upstream source, offline patch applied
+            (offline by default, multiplayer/LAN unlocked, never self-updates)
 
-Run:        ./run-offline.sh
-
-The first launch installs the game into the launcher data folder and selects it.
-You still need Minecraft 26.3 assets once: either an installed Minecraft 26.3
-(the launcher finds the official/Prism/MultiMC/Modrinth/ATLauncher folders) or
-run:  ./run-offline.sh prepare --version $TAG
+How to play
+-----------
+1. Open ./horizon-launcher (double-click it).
+   The first start copies the bundled game build into the launcher data folder,
+   selects it, and adds the launcher to the applications menu -- after that just
+   click the icon.
+2. Change your name in offline-name.txt next to the launcher (one line, 3-16
+   letters, digits or _), then start it again. That name is your offline
+   identity: the game plays as its offline UUID.
+3. First time only, it needs Minecraft 26.3 assets: an installed Minecraft 26.3
+   is found automatically (official / Prism / MultiMC / Modrinth / ATLauncher),
+   or run
+       ./horizon-launcher prepare --version $TAG
 
 No Microsoft account is needed and no account session is read.
-Your player identity is the client's own offline UUID for your offline name.
 Single-player, multiplayer and LAN all work. Servers that require a real
 Minecraft account (online-mode=true) will still reject offline identities.
 EOF
