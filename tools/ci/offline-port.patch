@@ -423,6 +423,37 @@ index f0f404f..c88a6e6 100644
                  cmd.envs(env);
                  // Still play, offline, and say why.
                  if let Some(e) = offline {
+diff --git a/launcher/src/frame.rs b/launcher/src/frame.rs
+index f9b2544..70d39d1 100644
+--- a/launcher/src/frame.rs
++++ b/launcher/src/frame.rs
+@@ -1011,9 +1011,8 @@ impl Launcher {
+         let (name, how) = self.who_plays();
+         let face = self.accounts.selected().map(|a| a.uuid.clone());
+         let open = self.account_menu;
+-        // Signed out, the chip is only the face: the Sign in with Microsoft button beside it
+-        // says it once, and the page tabs keep their room.
+-        let signed_in = face.is_some() && !tight;
++        // The chip names whoever plays: a Microsoft account, or this build's offline name.
++        let signed_in = !name.is_empty() && !tight;
+         let chip =
+             div()
+                 .id("account")
+@@ -1075,8 +1074,12 @@ impl Launcher {
+             .child(keyboard(chip, &t))
+             .children(self.glass_account_menu(cx));
+ 
+-        // Signing in with Microsoft, while nobody is: the mockup's button.
+-        let sign_in = self.accounts.selected().is_none().then(|| {
++        // Signing in with Microsoft, while nobody is: the mockup's button. An offline name is a
++        // way to play, not a missing sign-in, so it keeps the button out of the top bar (the
++        // account page still offers the Microsoft card).
++        let sign_in = (self.accounts.selected().is_none()
++            && self.accounts.offline_selected.is_none())
++        .then(|| {
+             keyboard(
+                 div()
+                     .id("topbar-sign-in")
 diff --git a/launcher/src/glass_account.rs b/launcher/src/glass_account.rs
 index e9bd43f..2104183 100644
 --- a/launcher/src/glass_account.rs
@@ -659,6 +690,41 @@ index e9bd43f..2104183 100644
 +        cx.notify();
 +    }
  }
+diff --git a/launcher/src/glass_sheet.rs b/launcher/src/glass_sheet.rs
+index 458d43e..088140a 100644
+--- a/launcher/src/glass_sheet.rs
++++ b/launcher/src/glass_sheet.rs
+@@ -236,13 +236,23 @@ impl Launcher {
+             },
+             // An instance that keeps no version of its own plays the latest, unless Use held
+             // the launcher's version on an older one: then it says which.
+-            None if instance.version.is_none() && self.version_of(instance).is_some() => match self
+-                .held_version()
+-                .filter(|_| instance.channel == Channel::Nightly)
+-            {
+-                Some(tag) => self.version_name(tag),
+-                None => tr("Latest version").to_string(),
+-            },
++            None if instance.version.is_none() && self.version_of(instance).is_some() => {
++                if let Some(tag) = self
++                    .held_version()
++                    .filter(|_| instance.channel == Channel::Nightly)
++                {
++                    self.version_name(tag)
++                } else if !horizon_launcher::backend::self_update_allowed() {
++                    // No upstream to follow: "latest" would name nothing, so the head names the
++                    // build the package carries, as the release tag does.
++                    self.settings
++                        .selected
++                        .clone()
++                        .unwrap_or_else(|| tr("Latest version").to_string())
++                } else {
++                    tr("Latest version").to_string()
++                }
++            }
+             None => self.version_of(instance).map_or_else(
+                 || tr("No version installed").to_string(),
+                 |tag| self.version_label(tag),
 diff --git a/launcher/src/horizon_bundle.rs b/launcher/src/horizon_bundle.rs
 new file mode 100644
 index 0000000..0e60bdf
@@ -841,10 +907,30 @@ index cccf9e9..9756728 100644
  }
  
 diff --git a/launcher/src/switch_page.rs b/launcher/src/switch_page.rs
-index 4062a2e..1628ee0 100644
+index 4062a2e..e869e89 100644
 --- a/launcher/src/switch_page.rs
 +++ b/launcher/src/switch_page.rs
-@@ -13,7 +13,9 @@ impl Launcher {
+@@ -5,15 +5,26 @@ use super::*;
+ impl Launcher {
+     /// The chip's two lines: the name that plays, and how.
+     pub(super) fn who_plays(&self) -> (String, &'static str) {
+-        match self.accounts.selected() {
+-            Some(a) => (a.name.clone(), tr("Microsoft account")),
+-            None => (String::new(), tr("Sign in with Microsoft")),
++        match self.accounts.player() {
++            crate::account::Player::Microsoft(_) => match self.accounts.selected() {
++                Some(a) => (a.name.clone(), tr("Microsoft account")),
++                None => (String::new(), tr("Sign in with Microsoft")),
++            },
++            // This build's ordinary player: the offline name the launcher keeps. Without one the
++            // game makes its own up, which the chip names too.
++            crate::account::Player::Offline(name) => (name, tr("Offline")),
++            crate::account::Player::GameName => (
++                tr("The name the game makes up").to_string(),
++                tr("Offline"),
++            ),
+         }
+     }
  
      pub(super) fn play_as(&mut self, uuid: &str) {
          let mut accounts = Accounts::load();
