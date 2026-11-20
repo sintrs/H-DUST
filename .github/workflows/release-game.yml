@@ -1,7 +1,7 @@
-name: Release game (upstream nightly verbatim)
+name: Build game (upstream nightly verbatim)
 
 # 出「本体」：游戏二进制直接复制上游 nightly 官方包，一个字节都不重编。
-# 版本号用 nightly-YYYY-MM-DD-xxxxxxx，避免与离线包 tag 冲突再加 -game 后缀。
+# 只上传 Actions artifact，不发 GitHub Release。
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -56,7 +56,7 @@ jobs:
           git pull --rebase origin main
           git push
 
-  publish:
+  build:
     name: Copy official nightly package
     needs: monitor
     if: needs.monitor.outputs.changed == 'true'
@@ -64,19 +64,9 @@ jobs:
     timeout-minutes: 30
     env:
       NIGHTLY_COMMIT: ${{ needs.monitor.outputs.nightly_commit }}
-      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}-game
+      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Refuse to overwrite an existing tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION_TAG}" >/dev/null 2>&1; then
-            echo "::error::tag ${VERSION_TAG} already exists; nothing was overwritten"
-            exit 1
-          fi
 
       - name: Download official nightly package
         env:
@@ -103,20 +93,9 @@ jobs:
           grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
             || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
 
-      - name: Publish verbatim copy
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          {
-            echo "Upstream nightly copied verbatim; no binaries rebuilt."
-            echo
-            echo "| Part | Source |"
-            echo "|---|---|"
-            echo "| All binaries / wasm / exporters | official nightly package, unchanged |"
-            echo
-            echo "Use the \`-offline\` release if you want the offline launcher."
-          } > release-notes-game.md
-          gh release create "$VERSION_TAG" horizon-linux-x86_64.tar.gz \
-            --title "Horizon game · $VERSION_TAG" \
-            --notes-file release-notes-game.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-game-${{ env.VERSION_TAG }}
+          path: horizon-linux-x86_64.tar.gz
+          retention-days: 90
+          if-no-files-found: error

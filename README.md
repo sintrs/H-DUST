@@ -4,7 +4,9 @@
 
 ## 用
 
-下载 `horizon-offline-linux-x86_64-offline.tar.gz`，解压，直接运行里面的 `horizon-launcher`：
+Actions 里点最近一次 `Build offline` 的运行，页面底部 **Artifacts** 下载
+`horizon-offline-nightly-...`，里面是 `horizon-offline-linux-x86_64-offline.tar.gz`。
+解压后直接运行里面的 `horizon-launcher`：
 
 ```bash
 tar -xzf horizon-offline-linux-x86_64-offline.tar.gz
@@ -39,15 +41,16 @@ cd horizon-offline-linux-x86_64
 
 ## 发
 
-两条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过：
+两条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。只上传 Actions artifact
+（保留 90 天），不发 Release：
 
-| Workflow | 产物 | tag |
+| Workflow | Artifact | 内容 |
 |---|---|---|
-| `release-offline.yml` | 打补丁的启动器 + 官方本体，一个包自足 | `nightly-...-offline` |
-| `release-game.yml` | 官方 nightly 包原样转发 | `nightly-...-game` |
+| `release-offline.yml` | `horizon-offline-nightly-...` | 打补丁的启动器 + 官方本体，一个包自足 |
+| `release-game.yml` | `horizon-game-nightly-...` | 官方 nightly 包原样转发 |
 
-同一个 nightly 上修 bug 重发：手动 `Release offline`，勾 `force=true`，覆盖同名 release 的资产，
-不新增 tag。
+同一个 nightly 上修 bug 重跑：手动 `Build offline`，勾 `force=true`，旧 artifact 留着不影响，
+下载时认最新的运行编号。
 
 `probe-port.yml` 是补丁探针，手动跑一次 `cargo check`（约 1 分钟），日志在 artifact `check-log`，
 看 `error[E` 条数。

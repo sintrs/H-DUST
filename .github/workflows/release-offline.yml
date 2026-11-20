@@ -1,12 +1,9 @@
-name: Release offline (offline launcher + official game)
+name: Build offline (offline launcher + official game)
 
 # 出「离线」包：离线名可在界面里改，单人、多人、LAN 都能用。
 # - 游戏本体：官方 nightly 包**原样复制**，不编译
-# - 启动器：从同一 nightly 的**上游源码**编译，然后打 offline-port.patch：
-#   把上游 11 月删掉的离线账号体系（离线名、无拥有者可玩）移植回来。
-#
-# 与 gerdaroot 的做法一致（他也是把离线账号层放回启动器），但我们跟着上游走：
-# 补丁以 tools/ci/offline-port.patch 的形式存在，上游一变就在 CI 里三方重放。
+# - 启动器：从同一 nightly 的**上游源码**编译，然后打 offline-port.patch
+# - 只上传 Actions artifact，不发 GitHub Release
 on:
   schedule:
     - cron: '*/35 * * * *'
@@ -61,14 +58,14 @@ jobs:
           git pull --rebase origin main
           git push
 
-  publish:
-    name: Build offline launcher and publish
+  build:
+    name: Build the offline package
     needs: monitor
     if: needs.monitor.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
-      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}-offline
+      VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}
       NIGHTLY_COMMIT: ${{ needs.monitor.outputs.nightly_commit }}
       LAUNCHER_VERSION: ${{ needs.monitor.outputs.launcher_version }}
     steps:
@@ -141,57 +138,25 @@ jobs:
           set -euo pipefail
           bash tools/ci/make-offline-package.sh \
             launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher \
-            "${VERSION_TAG%-offline}"
+            "${VERSION_TAG}"
 
-      - name: Create release notes
+      - name: Write build info
         run: |
           set -euo pipefail
           {
-            echo "Offline identity: single-player, multiplayer and LAN all work."
+            echo "version:    ${VERSION_TAG}"
+            echo "upstream:   ${NIGHTLY_COMMIT}"
+            echo "launcher:   built from that source + tools/ci/offline-port.patch"
+            echo "game:       official nightly package, copied verbatim"
+            echo "published:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            echo "| Part | Source |"
-            echo "|---|---|"
-            echo "| Launcher | built from upstream nightly-source \`${NIGHTLY_COMMIT:0:7}\` + the offline account patch |"
-            echo "| Game | official nightly \`${NIGHTLY_COMMIT:0:7}\` (installed as \`${VERSION_TAG%-offline}\`), copied verbatim |"
-            echo "| Patch | offline names, no account needed, multiplayer/LAN unlocked, no self-update |"
-            echo
-            echo "Unzip, run \`./horizon-launcher\`. The bundled game build installs itself on first start."
-            echo
-            echo "Change your name in **Settings → Account → Play offline**, or:"
-            echo
-            echo '```'
-            echo "./horizon-launcher account offline YourName"
-            echo '```'
-            echo
-            echo "No Microsoft account is needed and no account session is ever read. Servers with"
-            echo "\`online-mode=true\` still reject offline identities, as in other offline builds."
-          } > release-notes-offline.md
-
-      - name: Tag and publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          ASSET=$(find package -maxdepth 1 -name '*.tar.gz' | head -1)
-          [[ -n "$ASSET" ]] || { echo '::error::no package produced'; exit 1; }
-          # Same upstream build with a fixed launcher: replace the asset and the notes instead of
-          # leaving a stale package under an unchanged tag. A new upstream gives a new tag.
-          if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
-            gh release upload "$VERSION_TAG" "$ASSET" --clobber
-            gh release edit "$VERSION_TAG" --notes-file release-notes-offline.md
-            echo "replaced the asset and notes of $VERSION_TAG"
-          else
-            gh release create "$VERSION_TAG" "$ASSET" \
-              --title "Horizon offline · $VERSION_TAG" \
-              --notes-file release-notes-offline.md
-          fi
+            echo "Unzip, run ./horizon-launcher. The bundled build installs itself on first start."
+            echo "Change the name in Settings -> Account -> Play offline."
+          } > package/BUILD-INFO.txt
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: horizon-offline-${{ env.VERSION_TAG }}
-          path: |
-            package/
-            release-notes-offline.md
-          retention-days: 14
-          if-no-files-found: warn
+          path: package/
+          retention-days: 90
+          if-no-files-found: error
