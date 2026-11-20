@@ -102,7 +102,7 @@ jobs:
       - name: Clone upstream source with full history
         run: |
           set -euo pipefail
-          git clone --no-tags https://github.com/horizon-rust/horizon.git launcher-src
+          git clone https://github.com/horizon-rust/horizon.git launcher-src
           git -C launcher-src checkout "${GAME_REF}"
           echo "source: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
 
