@@ -142,21 +142,38 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 | Workflow | 产物 | tag | state |
 |---|---|---|---|
 | `.github/workflows/release-game.yml` | 官方 nightly 包原样复制，不编译 | `nightly-YYYY-MM-DD-xxxxxxx-game` | `state/game.json` |
-| `.github/workflows/release-offline.yml` | 上游游戏包 + 离线启动器（离线版） | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
+| `.github/workflows/release-offline.yml` | 官方启动器 + 官方游戏，装成 developer 版本开启离线 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
 
 两者都用 `tools/ci/monitor_upstream.py` 读 `horizon-rust/horizon/releases`，
 解析 `Nightly YYYY-MM-DD · xxxxxxx`，与各自 state 比较；没变化就跳过，有变化才构建发布。
 
 - **本体链路**：直接下载官方 `horizon-linux-x86_64.tar.gz`，一个字节不改，校验 commit 后发布。
-- **离线链路**：只编 `gerdaroot/Horizon-Offline-Launcher` 的启动器（`GATE_OPEN=true`），
-  再把它换进同一份官方 nightly 包，产出 `horizon-linux-x86_64-offline.tar.gz`。
+- **离线链路**：**什么都不编译**。下载官方 `launcher@X.Y.Z` 的 Linux 包 + 官方 nightly 游戏包，
+  把游戏装成 `developer-<commit>` 版本目录，开启上游内建的单人离线模式。
 
-> 为什么离线链路不再用「上游源码反向合并离线功能」：上游在 `1e789800af`（11-09）
-> 删除离线名字，当前 nightly 已是 11-19，中间 2 万多次提交、19 个启动器源码文件
-> 被大改（API 全部漂移）。直接 `git revert` 冲突后整文件回退，编译报
-> `horizon_mods` 模块不存在、`nightly_title_version` 等函数找不到、`Settings` 字段缺失。
-> 要真正把离线功能移植进最新启动器，得逐文件手工适配，是另一个量级的工程。
-> 当前离线链路改用已验证可编译、且明确开着离线门禁的 gerdaroot 启动器源码。
+### 离线是怎么来的（关键）
+
+上游启动器本来就带单人离线能力（`launcher/src/developer_offline.rs`），只是默认关闭。
+它的放行条件只有三条，全部是文件层面的：
+
+1. 版本目录名以 `developer-` 开头（`developer_install::is_developer`）；
+2. 目录里有 `.installed` 空文件；
+3. 目录里有 `developer.json`，内容是 `{"revision":"<40 位十六进制>"}`。
+
+再加环境变量 `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1` 和游戏参数 `--developer-single-player`
+即可离线开局。而官方 `horizon-client --launch-api` 明确列出 `--developer-single-player`，
+CI 里也做了断言（`Check the official client advertises offline single-player`）。
+
+因此离线包 = 官方最新启动器 + 官方最新游戏，**零编译、零补丁**，永远跟得上上游。
+解压后运行 `./run-offline.sh`：首次会把游戏装进启动器数据目录并选中，
+之后每次都会带上离线环境变量启动。
+
+限制（上游设计，非本仓库）：离线模式只允许**单人**，LAN 和服务器会被拒绝。
+
+> 早期尝试过「上游源码反向合并离线名字」：上游在 `1e789800af`（11-09）删除了离线账号体系，
+> 当前 nightly 已是 11-19，中间 2 万多次提交、19 个启动器源码被大改，
+> `git revert` 整文件回退后编译报 `horizon_mods` 缺失、`Settings` 字段不存在等一堆错。
+> 那条路要逐文件手工适配，已放弃。
 
 手动重建：在 Actions 里选对应 workflow → Run workflow，勾 `force` 可按当前上游 nightly
 强制再跑一次（同版本 tag 已存在时会拒绝覆盖，不会静默替换）。

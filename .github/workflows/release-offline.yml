@@ -1,8 +1,14 @@
-name: Release offline (offline launcher + upstream game)
+name: Release offline (official launcher + official game)
 
-# 出「离线」：游戏本体复制上游 nightly 官方包，启动器用已验证可编译的
-# gerdaroot/Horizon-Offline-Launcher 源码（GATE_OPEN=true，允许离线开局）。
-# 与 release-game.yml 完全独立：独立 state、独立 tag 后缀 -offline。
+# 出「离线」：不编译任何东西。
+# - 官方最新启动器 launcher@X.Y.Z（Linux tar.gz）
+# - 官方 nightly 游戏包（原样）
+# - 把游戏装成 developer-<commit> 版本，开启上游内建的单人离线模式
+#
+# 依据（已实测）：上游 launcher/src/developer_offline.rs 的开关条件只有
+#   版本目录名以 developer- 开头 + .installed + developer.json(40 位 revision)，
+# 且官方 horizon-client --launch-api 里列出 --developer-single-player。
+# 所以用官方启动器 + 官方游戏就能离线单人开局，无需改一行 Rust。
 on:
   schedule:
     - cron: '*/35 * * * *'
@@ -28,8 +34,8 @@ jobs:
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       nightly_commit: ${{ steps.check.outputs.nightly_commit }}
-      game_ref: ${{ steps.check.outputs.game_ref }}
       version_tag: ${{ steps.check.outputs.version_tag }}
+      launcher_version: ${{ steps.check.outputs.launcher_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,15 +63,16 @@ jobs:
           git pull --rebase origin main
           git push
 
-  build:
-    name: Build offline launcher and publish
+  publish:
+    name: Assemble offline package
     needs: monitor
     if: needs.monitor.outputs.changed == 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       VERSION_TAG: ${{ needs.monitor.outputs.version_tag }}-offline
       NIGHTLY_COMMIT: ${{ needs.monitor.outputs.nightly_commit }}
+      LAUNCHER_VERSION: ${{ needs.monitor.outputs.launcher_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,33 +86,17 @@ jobs:
             exit 1
           fi
 
-      - name: Free disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          df -h /
-
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config jq \
-            libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libx11-xcb-dev \
-            libfontconfig1-dev libvulkan-dev
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Clone offline launcher source
+      - name: Download official launcher and game
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git clone https://github.com/gerdaroot/Horizon-Offline-Launcher.git launcher-src
-          echo "launcher: $(git -C launcher-src log -1 --format='%h %ad %s' --date=short)"
-          grep -q 'GATE_OPEN: bool = true' launcher-src/launcher/src/account.rs \
-            || { echo '::error::offline gate is not open in the launcher source'; exit 1; }
-
-      - name: Build launcher only
-        run: bash tools/ci/build-linux.sh launcher-src dist launcher
+          [[ -n "${LAUNCHER_VERSION}" ]] || { echo '::error::no launcher@X.Y.Z release found'; exit 1; }
+          curl -fsSL --retry 3 -o launcher.tar.gz \
+            "https://github.com/horizon-rust/horizon/releases/download/${LAUNCHER_VERSION}/horizon-launcher-linux-x86_64.tar.gz"
+          curl -fsSL --retry 3 -o game.tar.gz \
+            'https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz'
+          ls -lh launcher.tar.gz game.tar.gz
 
       - name: Verify nightly still matches the pinned commit
         env:
@@ -120,23 +111,30 @@ jobs:
           grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
             || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
 
-      - name: Put our launcher into the untouched upstream package
+      - name: Assemble the offline package
+        run: bash tools/ci/make-offline-package.sh launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package
+
+      - name: Check the official client advertises offline single-player
         run: |
-          bash tools/ci/make-linux-package.sh dist package \
-            "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz"
+          set -euo pipefail
+          CLIENT=$(find package -maxdepth 4 -type f -name 'horizon-client' | head -1)
+          chmod +x "$CLIENT"
+          "$CLIENT" --launch-api | grep -q -- '--developer-single-player' \
+            || { echo '::error::this client no longer supports offline single-player'; exit 1; }
 
       - name: Create release notes
         run: |
           set -euo pipefail
           {
-            echo "Offline launcher build based on upstream nightly \`${NIGHTLY_COMMIT}\`."
+            echo "Nothing is rebuilt: the official launcher and the official game are copied as-is."
             echo
             echo "| Part | Source |"
             echo "|---|---|"
-            echo "| Game binaries | upstream nightly package, copied unchanged |"
-            echo "| Launcher | gerdaroot/Horizon-Offline-Launcher, \`GATE_OPEN=true\` |"
+            echo "| Launcher | official \`${LAUNCHER_VERSION}\` Linux build |"
+            echo "| Game | official nightly \`${NIGHTLY_COMMIT:0:7}\`, copied verbatim |"
+            echo "| Offline | the game is installed as a \`developer-\` version, which enables the upstream single-player offline mode |"
             echo
-            echo "Runs with \`HORIZON_LAUNCHER_NO_SELF_UPDATE=1\` to avoid being replaced by a signed update."
+            echo "Run \`./run-offline.sh\`. Single-player only; LAN and servers are refused by the upstream design."
           } > release-notes-offline.md
 
       - name: Tag and publish
