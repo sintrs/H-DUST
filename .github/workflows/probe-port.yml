@@ -1,15 +1,18 @@
 # 编译探针：上游源码 + tools/ci/offline-port.patch，只做 cargo check，不发版。
-# 目的：把 gerdaroot 那套离线账号（离线名列表、无拥有者可玩）移植到最新上游后，
-# 到底有多少编译错误。手动触发，日志作为 artifact 留下。
+# 默认检查当前 nightly；补丁一改就自动跑，1 分钟知道还贴不贴得上、能不能编。
 name: probe-port
 
 on:
+  push:
+    paths:
+      - tools/ci/offline-port.patch
+      - .github/workflows/probe-port.yml
   workflow_dispatch:
     inputs:
-      upstream_tag:
-        description: 上游源码 tag（nightly-source/ 之后的部分）
+      upstream_commit:
+        description: '上游 commit（留空 = 当前 nightly）'
         required: false
-        default: 2026-11-19-5ef7734
+        default: ''
 
 permissions:
   contents: read
@@ -18,32 +21,49 @@ jobs:
   check:
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch upstream source
+      - name: Resolve upstream commit
+        id: up
         run: |
-          TAG="${{ inputs.upstream_tag }}"
-          curl -fsSL -o upstream.tar.gz \
-            "https://codeload.github.com/horizon-rust/horizon/tar.gz/nightly-source/$TAG"
-          mkdir src
-          tar -xzf upstream.tar.gz -C src --strip-components=1 --touch
-          echo "upstream: $TAG"
+          set -euo pipefail
+          WANT="${{ inputs.upstream_commit }}"
+          if [[ -z "${WANT}" ]]; then
+            WANT=$(curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              https://api.github.com/repos/horizon-rust/horizon/releases/tags/nightly \
+              | jq -r '.body' | grep -oE '[0-9a-f]{40}' | head -1)
+          fi
+          [[ -n "${WANT}" ]] || { echo '::error::could not resolve the upstream commit'; exit 1; }
+          echo "commit=${WANT}" >> "$GITHUB_OUTPUT"
+          echo "upstream: ${WANT}"
+
+      - name: Clone that source
+        run: |
+          set -euo pipefail
+          git init -q src
+          git -C src remote add origin https://github.com/horizon-rust/horizon.git
+          git -C src fetch -q --depth 1 origin "${{ steps.up.outputs.commit }}"
+          git -C src checkout -q FETCH_HEAD
+          echo "source HEAD: $(git -C src rev-parse HEAD)"
 
       - name: Apply the offline port
         run: |
-          cd src
-          git init -q
-          git apply --stat ../tools/ci/offline-port.patch
-          git apply ../tools/ci/offline-port.patch
+          set -euo pipefail
+          git -C src apply --stat ../tools/ci/offline-port.patch
+          git -C src apply ../tools/ci/offline-port.patch
           echo "patch applied"
 
       - name: Libraries GPUI links to
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev \
-            libvulkan-dev libasound2-dev libudev-dev patchelf
+            pkg-config libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
+            libfontconfig-dev libvulkan-dev libasound2-dev libudev-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -52,17 +72,27 @@ jobs:
 
       - name: cargo check
         run: |
+          set -euo pipefail
           cd src/launcher
           set +e
           cargo check --message-format=short > /tmp/check.log 2>&1
-          echo "exit=$?"
+          CODE=$?
+          set -e
+          echo "exit=${CODE}"
           echo "--- 错误数 ---"
-          grep -c "error\[E" /tmp/check.log || true
+          ERR=$(grep -c "error\[E" /tmp/check.log || true)
+          echo "${ERR}"
           echo "--- 前 80 条 ---"
           grep -E "^error" /tmp/check.log | head -80 || true
-          exit 0
+          if [[ "${CODE}" != "0" || "${ERR}" != "0" ]]; then
+            echo "::error::the patch does not compile on ${{ steps.up.outputs.commit }}"
+            exit 1
+          fi
+          echo "clean"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: check-log
           path: /tmp/check.log
+          if-no-files-found: warn
