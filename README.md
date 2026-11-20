@@ -134,3 +134,41 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 - `exporters/` 只能在上游自托管 runner 上编（要用 Mojang 的 jar），公开 CI 拿不到 ——
   所以打包时以官方 nightly 包为骨架，把它带上，只换二进制。
 - 产物只解决 glibc / 编译这一关。能否渲染取决于显卡驱动（Vulkan 1.0+ 或 OpenGL 4.x）。
+
+## 自动跟版：监控 + 原样复制上游版本号
+
+新增 `.github/workflows/auto-release.yml`，每 30 分钟检查一次上游：
+
+1. `tools/ci/monitor_upstream.py` 从 `horizon-rust/horizon/releases` 取最新 `nightly`
+   和 `launcher@X.Y.Z`，解析 `Nightly YYYY-MM-DD · xxxxxxx`；
+2. 与 `state/upstream.json` 比较。没有变化就什么也不做；有变化就提交新的 state；
+3. 用**上游原样的版本号**打 tag：`nightly-YYYY-MM-DD-xxxxxxx`，
+   游戏源码钉在不可变的 `nightly-source/YYYY-MM-DD-xxxxxxx` tag；
+4. 启动器仍编译 `gerdaroot/Horizon-Offline-Launcher` 默认分支（保留 `GATE_OPEN = true`），
+   不向上游提合并，也不改上游源码；
+5. 打包时二次校验官方 `nightly` 骨架仍是同一个 commit，防止构建中途上游换版；
+6. 发布 GitHub Release，上传 `horizon-linux-x86_64-offline.tar.gz`。
+
+手动重建：`Actions → Auto release (copy upstream nightly version) → Run workflow`，
+勾 `force` 可以按当前上游 nightly 再编一次（同版本 tag 已存在时会拒绝覆盖，不会静默替换）。
+
+## 后面怎么维护
+
+采用「**本地改脚本 → git push → GitHub 编译**」的方式，不要把上游源码 vendor 进这个仓库：
+
+```bash
+git clone https://github.com/sintrs/H-DUST.git
+cd H-RUST
+# 改 tools/ci/*.sh、monitor_upstream.py、workflow
+git add -A && git commit -m '...' && git push
+```
+
+- 仓库保持很小，只有脚本、监控 state 和 workflow（当前约几十 KB）。
+- 每次构建时 Actions 现场 clone 上游和离线分支，源码天然是新的。
+- `state/upstream.json` 由 Actions 自动提交，手工只用于排查或回退，别当成主编辑对象。
+- `build-linux.yml` 保留作手动产物构建；`auto-release.yml` 负责定时跟版和发布。
+- 当前**没有配置 `RELEASE_SIGNING_KEY`**，所以发布的是可直接使用的产物，
+  不是启动器可自动更新的签名通道。运行时请带
+  `HORIZON_LAUNCHER_NO_SELF_UPDATE=1`，防止被官方/离线分支的签名更新覆盖。
+  以后要做自有更新通道，再生成 Ed25519 密钥对、把公钥写进 fork 的
+  `release-keys.txt`、私钥设为仓库 secret `RELEASE_SIGNING_KEY`，并patch `REPO` 常量。
