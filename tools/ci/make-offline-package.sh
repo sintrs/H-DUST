@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# 组装离线包：官方最新启动器 + 官方 nightly 游戏包，把游戏装成 developer- 版本。
+# 组装离线包：离线启动器 + 官方 nightly 游戏包，把游戏装成 developer- 版本。
 #
-# 为什么不需要编译：上游启动器自带单人离线能力（launcher/src/developer_offline.rs），
-# 触发条件只有三条——版本目录名以 developer- 开头、目录里有 .installed、
-# developer.json 里是 40 位十六进制 revision。官方 horizon-client 原生支持
-# --developer-single-player（已实测 --launch-api 里列出该选项）。
+# 两部分来源分开：
+#   - 启动器：默认用官方包里的二进制；给了第 5 个参数就用自编的（打了离线补丁）覆盖。
+#   - 游戏包：官方 nightly，原样复制，不编译。
+#
+# 启动器补丁只做一件事：不再注入 --developer-single-player，让 client 走正常启动
+# 路径，从而单人、多人、LAN 全部可用，身份是 client 原生的 offline_uuid(--name)。
 #
 # 用法:
-#   bash make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录>
+#   bash make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录> [自编的 horizon-launcher]
 set -euo pipefail
 
-LAUNCHER_TGZ=${1:?用法: make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录>}
+LAUNCHER_TGZ=${1:?用法: make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录> [launcher 二进制]}
 GAME_TGZ=${2:?}
 COMMIT=${3:?}
 OUT=${4:-package}
+LAUNCHER_BIN=${5:-}
 
 [[ -f "$LAUNCHER_TGZ" ]] || { echo "错误：找不到启动器包 $LAUNCHER_TGZ" >&2; exit 1; }
 [[ -f "$GAME_TGZ" ]] || { echo "错误：找不到游戏包 $GAME_TGZ" >&2; exit 1; }
@@ -41,6 +44,12 @@ tar -xzf "$LAUNCHER_TGZ" -C "$ROOT" --touch --no-same-owner
 [[ -f "$ROOT/horizon-launcher" ]] || { echo "错误：启动器包里没有 horizon-launcher" >&2; exit 1; }
 chmod +x "$ROOT/horizon-launcher"
 
+if [[ -n "$LAUNCHER_BIN" ]]; then
+  [[ -x "$LAUNCHER_BIN" ]] || { echo "错误：找不到自编的启动器 $LAUNCHER_BIN" >&2; exit 1; }
+  install -Dm755 "$LAUNCHER_BIN" "$ROOT/horizon-launcher"
+  echo "==> 已用自编的离线启动器覆盖官方二进制"
+fi
+
 echo "==> 解开官方游戏包"
 mkdir -p "$WORK/game"
 tar -xzf "$GAME_TGZ" -C "$WORK/game" --touch --no-same-owner 2>/dev/null || true
@@ -56,15 +65,15 @@ echo "==> 把游戏装成 $TAG"
 : > "$ROOT/data/versions/$TAG/.installed"
 printf '{"revision":"%s"}\n' "$COMMIT" > "$ROOT/data/versions/$TAG/developer.json"
 
-echo "==> 确认官方 client 仍然支持离线单人"
+echo "==> 检查 client 声明的离线能力"
 CLIENT="$ROOT/data/versions/$TAG/horizon-client"
 [[ -f "$CLIENT" ]] || { echo "错误：版本目录里没有 horizon-client" >&2; exit 1; }
 chmod +x "$CLIENT"
-if ! "$CLIENT" --launch-api 2>/dev/null | grep -q -- '--developer-single-player'; then
-  echo "错误：这个 client 不再提供 --developer-single-player，离线方案失效" >&2
-  exit 1
+if "$CLIENT" --launch-api 2>/dev/null | grep -q -- '--developer-single-player'; then
+  echo "    client 仍声明 --developer-single-player（本方案不依赖它）"
+else
+  echo "    注意：client 不再声明该选项；本方案不依赖它，继续"
 fi
-echo "    OK：--developer-single-player 存在"
 
 cat > "$ROOT/run-offline.sh" <<EOF
 #!/usr/bin/env bash
@@ -92,7 +101,7 @@ Horizon offline package
 =======================
 
 Game build: upstream nightly $SHORT (copied verbatim, not rebuilt)
-Launcher:   official horizon-launcher for this release (not rebuilt)
+Launcher:   built from the same upstream source, with the offline patch applied
 
 Run:        ./run-offline.sh
 
@@ -101,7 +110,10 @@ You still need Minecraft 26.3 assets once: either an installed Minecraft 26.3
 (the launcher finds the official/Prism/MultiMC/Modrinth/ATLauncher folders) or
 run:  ./run-offline.sh prepare --version $TAG
 
-Offline play is single-player only; LAN and servers are refused by design.
+No Microsoft account is needed and no account session is read.
+Your player identity is the client's own offline UUID for your offline name.
+Single-player, multiplayer and LAN all work. Servers that require a real
+Minecraft account (online-mode=true) will still reject offline identities.
 EOF
 
 ASSET="$OUT/$NAME-offline.tar.gz"

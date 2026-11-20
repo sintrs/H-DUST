@@ -142,38 +142,49 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 | Workflow | 产物 | tag | state |
 |---|---|---|---|
 | `.github/workflows/release-game.yml` | 官方 nightly 包原样复制，不编译 | `nightly-YYYY-MM-DD-xxxxxxx-game` | `state/game.json` |
-| `.github/workflows/release-offline.yml` | 官方启动器 + 官方游戏，装成 developer 版本开启离线 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
+| `.github/workflows/release-offline.yml` | 离线启动器（上游源码编）+ 官方游戏，单人/多人/LAN 全开 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
 
 两者都用 `tools/ci/monitor_upstream.py` 读 `horizon-rust/horizon/releases`，
 解析 `Nightly YYYY-MM-DD · xxxxxxx`，与各自 state 比较；没变化就跳过，有变化才构建发布。
 
 - **本体链路**：直接下载官方 `horizon-linux-x86_64.tar.gz`，一个字节不改，校验 commit 后发布。
-- **离线链路**：**什么都不编译**。下载官方 `launcher@X.Y.Z` 的 Linux 包 + 官方 nightly 游戏包，
-  把游戏装成 `developer-<commit>` 版本目录，开启上游内建的单人离线模式。
+- **离线链路**：游戏包同样原样复制；**只编启动器**——拿同一 nightly 的上游源码，
+  打一个最小补丁后编译，替换掉官方二进制。
 
 ### 离线是怎么来的（关键）
 
-上游启动器本来就带单人离线能力（`launcher/src/developer_offline.rs`），只是默认关闭。
-它的放行条件只有三条，全部是文件层面的：
+上游从 0.2.79 起删掉离线账号体系，又用 `--developer-single-player` 把开发者模式锁成单人。
+锁一共三道：
 
-1. 版本目录名以 `developer-` 开头（`developer_install::is_developer`）；
+1. `launcher/src/developer_offline.rs::mark()` 往命令行注入该 flag；
+2. 同文件 `validate()` 见到 `--server` / `--quickPlayMultiplayer` 等直接报错；
+3. `crates/horizon-client/.../developer_launch.rs` 在 client 里再拦一次。
+
+但 client **本身原生支持离线身份连服务器**：`connect_remote_session` 在没有账号会话时
+用的就是 `offline_uuid(name)`，`--name` 也早有定义。所有网络锁都只挂在那个 flag 上。
+
+所以补丁只做一件事：**`mark()` 不再注入 `--developer-single-player`**（见
+`tools/ci/patch_launcher_offline.py`）。于是：
+
+- `validate(cmd)` 里 `offline` 恒为 `false`，网络校验自动全部跳过，不用改它；
+- `require_capability()` 只探测 client 的 `--launch-api`，client 没动，仍通过；
+- client 走正常启动路径 → **单人、多人、LAN 全部可用**，身份是离线 UUID。
+
+启动器仍然走开发者分支，因为版本目录满足三条文件条件：
+
+1. 目录名以 `developer-` 开头（`developer_install::is_developer`）；
 2. 目录里有 `.installed` 空文件；
 3. 目录里有 `developer.json`，内容是 `{"revision":"<40 位十六进制>"}`。
 
-再加环境变量 `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1` 和游戏参数 `--developer-single-player`
-即可离线开局。而官方 `horizon-client --launch-api` 明确列出 `--developer-single-player`，
-CI 里也做了断言（`Check the official client advertises offline single-player`）。
+再配合 `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1`，launcher 就不会去读账号会话。
+解压后运行 `./run-offline.sh`：首次把游戏装进启动器数据目录并选中，之后直接开局。
 
-因此离线包 = 官方最新启动器 + 官方最新游戏，**零编译、零补丁**，永远跟得上上游。
-解压后运行 `./run-offline.sh`：首次会把游戏装进启动器数据目录并选中，
-之后每次都会带上离线环境变量启动。
+> 连 `online-mode=true` 的正版服务器仍会被服务端拒绝——这是离线身份的固有限制，
+> 与 gerdaroot 那套离线启动器一致。离线开服（`online-mode=false`）和 LAN 不受影响。
 
-限制（上游设计，非本仓库）：离线模式只允许**单人**，LAN 和服务器会被拒绝。
-
-> 早期尝试过「上游源码反向合并离线名字」：上游在 `1e789800af`（11-09）删除了离线账号体系，
-> 当前 nightly 已是 11-19，中间 2 万多次提交、19 个启动器源码被大改，
-> `git revert` 整文件回退后编译报 `horizon_mods` 缺失、`Settings` 字段不存在等一堆错。
-> 那条路要逐文件手工适配，已放弃。
+> 早期试过「上游源码反向合并删除离线账号那次提交」：`1e789800af`（11-09）到当前 nightly
+> 隔了 2 万多次提交、19 个启动器源码被大改，`git revert` 整文件回退后编译报
+> `horizon_mods` 缺失、`Settings` 字段不存在等一堆错。那条路已放弃。
 
 手动重建：在 Actions 里选对应 workflow → Run workflow，勾 `force` 可按当前上游 nightly
 强制再跑一次（同版本 tag 已存在时会拒绝覆盖，不会静默替换）。
