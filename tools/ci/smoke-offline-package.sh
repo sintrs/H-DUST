@@ -163,11 +163,18 @@ say "5. the launch resolves without an owner (the gate is open)"
 # version is prepared. This package has no Minecraft 26.3 resources, so a working build
 # always stops at "is not prepared yet", *after* the account step. Stopping there is the
 # proof; being refused for want of an owner is the regression.
+#
+# Match the refusal sentences themselves (account::NEEDS_OWNER / DOES_NOT_OWN /
+# NOT_CONFIGURED), not the word "own": the prepare hint's tail ends with "the signed-in
+# account that owns it", so a loose search reports a pass as a failure.
 PLAY=$(timeout 300 "$L" play --version "$TAG" 2>&1 | head -60)
 echo "$PLAY" >> "$LOG"
-if grep -qiE "own(s)? the game|own Minecraft|sign in with a Microsoft account|no signed-in account" <<< "$PLAY"; then
+REFUSAL=$(grep -iE \
+  "owns Minecraft: Java Edition to play|doesn't own Minecraft|no Microsoft sign-in" \
+  <<< "$PLAY" || true)
+if [[ -n "$REFUSAL" ]]; then
   bad "play refused for want of an account that owns the game; the offline gate (GATE_OPEN) is closed again"
-  echo "$PLAY" | sed 's/^/     | /'
+  echo "$REFUSAL" | sed 's/^/     | /'
 elif grep -q "is not prepared yet" <<< "$PLAY"; then
   say "ok   play read the sign-in and asked for no account; it stopped only at the missing game resources"
 else
@@ -175,19 +182,19 @@ else
 fi
 
 say "6. this build will not replace itself with upstream's"
-# `update` prints "does not replace itself" when self_update_allowed() is false -- which is
-# what the patch pins. A build where that pin is gone would offer to install upstream's
-# launcher, dropping the offline layer at the next start. No network is a skip, not a
-# pass: an empty output proves nothing.
+# `update` prints "does not replace itself" when self_update_allowed() is false -- what the
+# patch pins -- but only once upstream actually has a newer launcher. When this build is
+# already the newest, "is up to date" is the same answer: nothing was installed over it.
+# Only an install is a failure. No network at all is a skip, not a pass.
 UPDATE_OUT=$(timeout 90 "$L" update 2>&1) || UPDATE_RC=$?
 echo "$UPDATE_OUT" >> "$LOG"
 if [[ "${UPDATE_RC:-0}" -ne 0 && -z "$UPDATE_OUT" ]]; then
   say "note: update needs the network; skipped on this runner"
-elif grep -qi "does not replace itself" <<< "$UPDATE_OUT"; then
-  say "ok   update says it will not replace itself"
-elif grep -qiE "updated to|Updating the launcher|installed .*launcher" <<< "$UPDATE_OUT"; then
+elif grep -qiE "updated to|Updating the launcher|Launcher: installed" <<< "$UPDATE_OUT"; then
   bad "update installed a launcher over this build: self_update_allowed() is no longer pinned to false"
   echo "$UPDATE_OUT" | sed 's/^/     | /'
+elif grep -qiE "does not replace itself|is up to date" <<< "$UPDATE_OUT"; then
+  say "ok   update left this build alone ($(grep -i 'launcher:' <<< "$UPDATE_OUT" | head -1))"
 else
   say "note: could not tell from update's output: $(head -2 <<< "$UPDATE_OUT" | tr '\n' ' ')"
 fi
