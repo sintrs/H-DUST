@@ -74,16 +74,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Refuse to overwrite an existing tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION_TAG}" >/dev/null 2>&1; then
-            echo "::error::tag ${VERSION_TAG} already exists; nothing was overwritten"
-            exit 1
-          fi
-
       - name: Install Rust
         run: |
           set -euo pipefail
@@ -184,9 +174,17 @@ jobs:
           set -euo pipefail
           ASSET=$(find package -maxdepth 1 -name '*.tar.gz' | head -1)
           [[ -n "$ASSET" ]] || { echo '::error::no package produced'; exit 1; }
-          gh release create "$VERSION_TAG" "$ASSET" \
-            --title "Horizon offline · $VERSION_TAG" \
-            --notes-file release-notes-offline.md
+          # Same upstream build with a fixed launcher: replace the asset and the notes instead of
+          # leaving a stale package under an unchanged tag. A new upstream gives a new tag.
+          if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
+            gh release upload "$VERSION_TAG" "$ASSET" --clobber
+            gh release edit "$VERSION_TAG" --notes-file release-notes-offline.md
+            echo "replaced the asset and notes of $VERSION_TAG"
+          else
+            gh release create "$VERSION_TAG" "$ASSET" \
+              --title "Horizon offline · $VERSION_TAG" \
+              --notes-file release-notes-offline.md
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
