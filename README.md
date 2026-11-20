@@ -78,6 +78,23 @@ git stash -u && git apply --check tools/ci/offline-port.patch   # 确认能干�
 
 上游改了 `account.rs` / `frame.rs` / `cli.rs` 时 `git apply` 会红，跑一次 `probe-port.yml` 就知道。
 
+### 两道闸
+
+`git apply` 只看上下文行，不看行为：上游把一个函数改成空实现，补丁照样贴得干净，编出来也能跑，
+只是离线层没了。所以打完补丁之后、打包之后各有一道检查：
+
+| 检查 | 时机 | 抓什么 |
+|---|---|---|
+| `check-port-invariants.py` | 补丁贴完后 | 补丁依赖的 25 个上游契约（`GATE_OPEN`、`launch_for_game` 签名、`Player` 三态、`GameSession.name`、`.installed`、`data_dir()`、`nightly::date_of`…）。谁挪了就说谁挪了 |
+| `smoke-offline-package.sh` | 打包装好之后 | 解开真实的包跑一次：二进制起得来、随包版本被装进数据目录、离线名存得住并生效、`play` 不被账号挡住、不会自我更新 |
+
+两道都是真跑，不是 grep 过一遍就算。本地也能跑：
+
+```bash
+python3 tools/ci/check-port-invariants.py <打过补丁的源码目录>
+bash tools/ci/smoke-offline-package.sh <离线包.tar.gz> <版本 tag>
+```
+
 ## 文件
 
 | 文件 | 作用 |
@@ -85,6 +102,8 @@ git stash -u && git apply --check tools/ci/offline-port.patch   # 确认能干�
 | `tools/ci/offline-port.patch` | 离线账号层移植补丁 |
 | `tools/ci/build-linux.sh` | 编译 |
 | `tools/ci/make-offline-package.sh` | 组装离线包 |
+| `tools/ci/check-port-invariants.py` | 补丁依赖的上游契约检查 |
+| `tools/ci/smoke-offline-package.sh` | 打包后的冒烟测试 |
 | `tools/ci/monitor_upstream.py` | 解析上游 nightly 与 state 比较 |
 | `.github/workflows/release-offline.yml` | 离线链路 |
 | `.github/workflows/release-game.yml` | 本体链路 |

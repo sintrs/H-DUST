@@ -102,6 +102,14 @@ jobs:
           git -C src apply ../tools/ci/offline-port.patch
           echo "offline-port.patch applied to $(git -C src rev-parse --short HEAD)"
 
+      # A patch can apply cleanly onto an upstream change that quietly undoes it:
+      # `git apply` only cares about the context lines, not about whether the offline
+      # behaviour still holds. These are the upstream contracts the patch leans on, each
+      # named so a failure says what moved instead of leaving a build that compiles and
+      # then refuses every launch.
+      - name: Check the upstream contracts the patch depends on
+        run: python3 tools/ci/check-port-invariants.py src
+
       - name: Build the launcher
         env:
           HORIZON_GAME_BUILD_ID: ${{ needs.monitor.outputs.nightly_commit }}
@@ -109,7 +117,8 @@ jobs:
           set -euo pipefail
           bash tools/ci/build-linux.sh src dist launcher
           test -x dist/horizon-launcher || { echo '::error::launcher binary missing'; exit 1; }
-          dist/horizon-launcher --version || true
+          # Not `|| true`: a launcher that cannot even print its version is a broken package.
+          dist/horizon-launcher --version
 
       - name: Download the official game package
         run: |
@@ -139,6 +148,17 @@ jobs:
           bash tools/ci/make-offline-package.sh \
             launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher \
             "${VERSION_TAG}"
+
+      # The binary that ships, unzipped and run for real. A patched build that compiles
+      # but no longer opens the account gate, keeps an offline name, or installs its
+      # bundled version would otherwise be found by the player, not here.
+      - name: Smoke-test the packaged build
+        env:
+          SMOKE_TMPDIR: ${{ runner.temp }}/smoke
+        run: |
+          set -euo pipefail
+          bash tools/ci/smoke-offline-package.sh \
+            package/horizon-offline-linux-x86_64-offline.tar.gz "${VERSION_TAG}"
 
       - name: Write build info
         run: |
