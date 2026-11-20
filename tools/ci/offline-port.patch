@@ -1,0 +1,402 @@
+diff --git a/launcher/src/account.rs b/launcher/src/account.rs
+index b4172bf..5ecb7fe 100644
+--- a/launcher/src/account.rs
++++ b/launcher/src/account.rs
+@@ -1744,11 +1744,36 @@ pub struct Accounts {
+     pub accounts: Vec<Account>,
+     /// The UUID of the account the game starts with; none: the first one.
+     pub selected: Option<String>,
+-    /// Offline names an older launcher kept (`offline`), read only so that the next save also
+-    /// deletes their skins and capes (`skins/<name>.png`, `skins/<name>.cape.png`). Its
+-    /// `offline_selected` and `looks` are dropped on read.
+-    #[serde(default, rename = "offline", skip_serializing)]
+-    old_offline: Vec<String>,
++    /// Offline names this build keeps: each plays as its own offline UUID, with no Microsoft
++    /// account and no owner. The name in `offline_selected` plays when no account is selected.
++    #[serde(default)]
++    pub offline: Vec<String>,
++    /// The offline name that plays when no account is selected.
++    #[serde(default)]
++    pub offline_selected: Option<String>,
++}
++
++/// Who plays now: a signed-in account, a kept offline name, or the name the game makes up.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum Player {
++    /// A Microsoft account, by UUID.
++    Microsoft(String),
++    /// An offline name.
++    Offline(String),
++    /// Offline as the name the game made up.
++    GameName,
++}
++
++/// This build plays without an account that owns the game: the owner gate stays open, as if the
++/// hidden developer option (`offline_without_owner`) were always on.
++pub const GATE_OPEN: bool = true;
++
++/// Whether `name` can be an offline name: 3 to 16 letters, digits or `_`, as account names are.
++pub fn valid_offline_name(name: &str) -> bool {
++    (3..=16).contains(&name.chars().count())
++        && name
++            .chars()
++            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+ }
+ 
+ /// The secrets an account keeps in `store`, if it still has them there.
+@@ -1789,16 +1814,6 @@ impl Accounts {
+             let _ = std::fs::remove_file(&tmp);
+             return Err(e.to_string());
+         }
+-        // An older launcher's offline names: their skins and capes go too, missing files are fine.
+-        if let Some(skins) = path.parent().map(|dir| dir.join("skins")) {
+-            for name in &self.old_offline {
+-                let key = name.to_ascii_lowercase();
+-                for file in [format!("{key}.png"), format!("{key}.cape.png")] {
+-                    let _ = std::fs::remove_file(skins.join(file));
+-                }
+-            }
+-            let _ = std::fs::remove_dir(&skins);
+-        }
+         Ok(())
+     }
+     /// Saves what a launch renewed (names, skins) into `accounts.json` as it is now, under the
+@@ -1875,15 +1890,78 @@ impl Accounts {
+             .any(|a| secrets_in(store, &a.uuid).is_some_and(|s| s.owns))
+     }
+ 
+-    /// Plays as the signed-in account `uuid`.
+-    pub fn play_as(&mut self, uuid: &str) -> Result<(), String> {
+-        if !self.accounts.iter().any(|a| a.uuid == uuid) {
+-            return Err("That account isn't signed in.".into());
++    /// Who plays now.
++    pub fn player(&self) -> Player {
++        match (self.selected(), &self.offline_selected) {
++            (Some(a), _) => Player::Microsoft(a.uuid.clone()),
++            (None, Some(name)) => Player::Offline(name.clone()),
++            (None, None) => Player::GameName,
++        }
++    }
++
++    /// Plays as `who`: a signed-in account, a kept offline name, or the game's own name.
++    pub fn play_as(&mut self, who: Player) -> Result<(), String> {
++        match who {
++            Player::Microsoft(uuid) => {
++                if !self.accounts.iter().any(|a| a.uuid == uuid) {
++                    return Err("That account isn't signed in.".into());
++                }
++                self.selected = Some(uuid);
++                self.offline_selected = None;
++            }
++            Player::Offline(name) => {
++                let name = self.add_offline(&name)?;
++                self.selected = None;
++                self.offline_selected = Some(name);
++            }
++            Player::GameName => {
++                self.selected = None;
++                self.offline_selected = None;
++            }
+         }
+-        self.selected = Some(uuid.to_string());
+         Ok(())
+     }
+ 
++    /// Keeps an offline name (once, in any case); returns it as kept.
++    pub fn add_offline(&mut self, name: &str) -> Result<String, String> {
++        let name = name.trim();
++        if !valid_offline_name(name) {
++            return Err(format!(
++                "{name}: an offline name is 3 to 16 letters, digits or _"
++            ));
++        }
++        if let Some(kept) = self.offline.iter().find(|n| n.eq_ignore_ascii_case(name)) {
++            return Ok(kept.clone());
++        }
++        self.offline.push(name.to_string());
++        Ok(name.to_string())
++    }
++
++    /// Forgets an offline name; if it was playing, the game's own name plays.
++    pub fn remove_offline(&mut self, name: &str) -> Result<(), String> {
++        let before = self.offline.len();
++        self.offline.retain(|n| !n.eq_ignore_ascii_case(name));
++        if self.offline.len() == before {
++            return Err(format!("No offline name {name}."));
++        }
++        if self
++            .offline_selected
++            .as_ref()
++            .is_some_and(|n| n.eq_ignore_ascii_case(name))
++        {
++            self.offline_selected = None;
++        }
++        Ok(())
++    }
++
++    /// The game's `--name` for this run: the offline name, when one plays.
++    pub fn name_arg(&self) -> Option<&str> {
++        match self.selected() {
++            Some(_) => None,
++            None => self.offline_selected.as_deref(),
++        }
++    }
++
+     /// A renewed profile (its name or skin changed) in place of the old one; who plays stays.
+     fn update(&mut self, account: Account) {
+         if let Some(a) = self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+@@ -2065,10 +2143,18 @@ pub fn launch_for_game(
+     store: &dyn SecretStore,
+     accounts: &mut Accounts,
+ ) -> Result<Launch, NoOwner> {
+-    if accounts.selected().is_none() {
++    if accounts.selected().is_none() && accounts.offline_selected.is_none() {
+         accounts.selected = accounts.accounts.first().map(|a| a.uuid.clone());
+     }
+-    let pass = launch(ep, client_id, store, accounts)?;
++    let pass = match launch(ep, client_id, store, accounts) {
++        Ok(pass) => pass,
++        // This build plays without an owner: no session file, the client's own offline identity.
++        Err(_) if GATE_OPEN => Launch::default(),
++        Err(e) => return Err(e),
++    };
++    if GATE_OPEN {
++        return Ok(pass);
++    }
+     let owns = accounts
+         .selected()
+         .and_then(|a| secrets_in(store, &a.uuid))
+@@ -2311,6 +2397,8 @@ pub struct GameSession {
+     pub file: Option<PathBuf>,
+     /// Why the account plays offline this time, if it does.
+     pub offline: Option<String>,
++    /// The offline name that plays (`--name`); none: an account's session, or the game's own name.
++    pub name: Option<String>,
+     /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+     pub env: Vec<(&'static str, String)>,
+ }
+@@ -2330,10 +2418,11 @@ pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
+         &mut accounts,
+         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
+     );
++    let name = accounts.name_arg().map(str::to_string);
+     if let Err(e) = accounts.save_renewed() {
+         eprintln!("Horizon: the accounts are not saved: {e}");
+     }
+-    Ok(session_file(game_home, pass, env))
++    Ok(session_file(game_home, pass, env, name))
+ }
+ 
+ /// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
+@@ -2361,7 +2450,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
+     if let Err(e) = accounts.save_renewed() {
+         eprintln!("Horizon: the accounts are not saved: {e}");
+     }
+-    Ok(session_file(game_home, pass, env))
++    Ok(session_file(game_home, pass, env, None))
+ }
+ 
+ /// The owner gate as `who`, on `accounts`, which keeps its choice of player.
+@@ -2373,17 +2462,25 @@ fn launch_as(
+     who: &str,
+ ) -> Result<Launch, String> {
+     let chosen = accounts.selected.clone();
++    let chosen_offline = accounts.offline_selected.clone();
+     let pass = accounts
+-        .play_as(who)
++        .play_as(Player::Microsoft(who.to_string()))
+         .and_then(|()| launch_for_game(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+     accounts.selected = chosen;
++    accounts.offline_selected = chosen_offline;
+     pass
+ }
+ 
+ /// The game's session files for a launch that passed the gate.
+-fn session_file(game_home: &Path, pass: Launch, env: Vec<(&'static str, String)>) -> GameSession {
++fn session_file(
++    game_home: &Path,
++    pass: Launch,
++    env: Vec<(&'static str, String)>,
++    name: Option<String>,
++) -> GameSession {
+     let mut out = GameSession {
+         env,
++        name,
+         offline: pass.offline,
+         ..GameSession::default()
+     };
+diff --git a/launcher/src/account/tests.rs b/launcher/src/account/tests.rs
+index 14b0d21..507655e 100644
+--- a/launcher/src/account/tests.rs
++++ b/launcher/src/account/tests.rs
+@@ -710,7 +710,7 @@ fn the_game_plays_only_as_an_account_that_owns_it() {
+         skin: None,
+         cape: None,
+     });
+-    accounts.play_as("other").unwrap();
++    accounts.play_as(Player::Microsoft("other".into())).unwrap();
+     let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap_err();
+     assert!(refused
+         .to_string()
+@@ -1171,9 +1171,9 @@ fn play_as_picks_a_signed_in_account() {
+         }],
+         ..Accounts::default()
+     };
+-    a.play_as("abc").unwrap();
++    a.play_as(Player::Microsoft("abc".into())).unwrap();
+     assert_eq!(a.selected().unwrap().name, "Ludo");
+-    assert!(a.play_as("zzz").is_err());
++    assert!(a.play_as(Player::Microsoft("zzz".into())).is_err());
+     assert_eq!(a.selected.as_deref(), Some("abc"));
+     // An accounts.json written now has nothing but the accounts and who plays.
+     assert_eq!(
+diff --git a/launcher/src/backend.rs b/launcher/src/backend.rs
+index 1cde630..c7d3675 100644
+--- a/launcher/src/backend.rs
++++ b/launcher/src/backend.rs
+@@ -3452,7 +3452,9 @@ fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
+ 
+ /// Development builds and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
+ pub fn self_update_allowed() -> bool {
+-    !cfg!(debug_assertions) && std::env::var_os("HORIZON_LAUNCHER_NO_SELF_UPDATE").is_none()
++    // The offline build is a patched launcher: updating it from upstream would replace the
++    // binary with one that puts the account gate back, so it never updates itself.
++    false
+ }
+ 
+ /// The version in `horizon-launcher --version`'s output (`horizon-launcher 0.1.5`).
+diff --git a/launcher/src/backend/developer_play.rs b/launcher/src/backend/developer_play.rs
+index 49ab979..14dc9b0 100644
+--- a/launcher/src/backend/developer_play.rs
++++ b/launcher/src/backend/developer_play.rs
+@@ -35,6 +35,10 @@ pub fn client_as(tag: &str, who: Option<&str>) -> Result<Command, String> {
+         if let Some(file) = session.file {
+             cmd.arg("--session-file").arg(file);
+         }
++        // An offline name plays as itself: the client makes its offline UUID from `--name`.
++        if let Some(name) = session.name {
++            cmd.arg("--name").arg(name);
++        }
+         cmd.envs(session.env);
+         if let Some(e) = session.offline {
+             eprintln!("Playing offline: {e}");
+diff --git a/launcher/src/cli.rs b/launcher/src/cli.rs
+index dc0afba..c17f51e 100644
+--- a/launcher/src/cli.rs
++++ b/launcher/src/cli.rs
+@@ -2085,7 +2085,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+         }
+         AccountCmd::Select { who } => {
+             let a = find(&accounts, &who)?;
+-            accounts.play_as(&a.uuid)?;
++            accounts.play_as(crate::account::Player::Microsoft(a.uuid.clone()))?;
+             accounts.save()?;
+             println!("The game plays as {}.", a.name);
+         }
+diff --git a/launcher/src/developer_offline.rs b/launcher/src/developer_offline.rs
+index 2a93c35..ba8c747 100644
+--- a/launcher/src/developer_offline.rs
++++ b/launcher/src/developer_offline.rs
+@@ -7,7 +7,7 @@ use std::process::Command;
+ 
+ pub const ENV: &str = "HORIZON_LAUNCHER_DEVELOPER_OFFLINE";
+ pub const FLAG: &str = "--developer-single-player";
+-pub const NOTICE: &str = "Offline developer session: single-player only; no account features.";
++pub const NOTICE: &str = "Offline developer session: no account features; single-player, multiplayer and LAN use an offline identity.";
+ 
+ pub fn enabled(tag: &str) -> bool {
+     if std::env::var_os(ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+@@ -91,8 +91,10 @@ fn supports_restriction(bytes: &[u8]) -> bool {
+ }
+ 
+ pub fn mark(cmd: &mut Command) {
+-    cmd.arg(FLAG)
+-        .env_remove("HORIZON_SESSION_FILE")
++    // H-RUST offline patch：不注入 --developer-single-player。
++    // client 无会话时本就用 offline_uuid(--name)，注入该 flag 只会把
++    // 多人/LAN 一并锁死；离线身份由下面的 env_remove 保证。
++    cmd.env_remove("HORIZON_SESSION_FILE")
+         .env_remove("HORIZON_ACCOUNT_SESSIONS")
+         .env_remove("HORIZON_LAUNCHER_EXE");
+ }
+diff --git a/launcher/src/developer_play.rs b/launcher/src/developer_play.rs
+index f0f404f..c88a6e6 100644
+--- a/launcher/src/developer_play.rs
++++ b/launcher/src/developer_play.rs
+@@ -25,11 +25,15 @@ impl Launcher {
+                     return;
+                 }
+             };
+-            if let Some(account::GameSession { file, offline, env }) = pass {
++            if let Some(account::GameSession { file, offline, name, env }) = pass {
+                 self.owner = Some(true);
+                 if let Some(file) = file {
+                     cmd.arg("--session-file").arg(file);
+                 }
++                // An offline name plays as itself: the client makes its offline UUID from `--name`.
++                if let Some(name) = name {
++                    cmd.arg("--name").arg(name);
++                }
+                 cmd.envs(env);
+                 // Still play, offline, and say why.
+                 if let Some(e) = offline {
+diff --git a/launcher/src/launcher_setup.rs b/launcher/src/launcher_setup.rs
+index 1b5a39e..300e6c5 100644
+--- a/launcher/src/launcher_setup.rs
++++ b/launcher/src/launcher_setup.rs
+@@ -519,7 +519,8 @@ impl Launcher {
+     }
+ 
+     pub(crate) fn launcher_download_available(&self) -> bool {
+-        !backend::package_managed_launcher()
++        // The offline build never offers "download the new launcher": it would drop the patch.
++        false
+     }
+ 
+     pub(crate) fn update_launcher(&mut self, release: Release) {
+diff --git a/launcher/src/switch_page.rs b/launcher/src/switch_page.rs
+index 4062a2e..1628ee0 100644
+--- a/launcher/src/switch_page.rs
++++ b/launcher/src/switch_page.rs
+@@ -13,7 +13,9 @@ impl Launcher {
+ 
+     pub(super) fn play_as(&mut self, uuid: &str) {
+         let mut accounts = Accounts::load();
+-        let done = accounts.play_as(uuid).and_then(|()| accounts.save());
++        let done = accounts
++        .play_as(crate::account::Player::Microsoft(uuid.to_string()))
++        .and_then(|()| accounts.save());
+         match done {
+             Ok(()) => self.accounts = accounts,
+             Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
+diff --git a/launcher/src/titlebar.rs b/launcher/src/titlebar.rs
+index ddfd5f6..5fd31c3 100644
+--- a/launcher/src/titlebar.rs
++++ b/launcher/src/titlebar.rs
+@@ -23,7 +23,7 @@ pub fn draws_brand(window: &Window) -> bool {
+ 
+ pub fn options() -> TitlebarOptions {
+     TitlebarOptions {
+-        title: Some("Horizon Launcher".into()),
++        title: Some("Horizon Offline".into()),
+         // macOS and Windows place the GPUI content under the native title bar. Linux uses
+         // client-side decorations below, so its title bar is transparent by construction.
+         appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
+@@ -85,7 +85,7 @@ pub fn render(theme: &Theme, window: &Window) -> Option<Div> {
+         .child(mark(16., theme))
+         .child(
+             blocks::pixel(13., FontWeight::MEDIUM)
+-                .child(horizon_launcher::i18n::tr("Horizon Launcher")),
++                .child(horizon_launcher::i18n::tr("Horizon Offline")),
+         );
+ 
+     let mut bar = div()
+@@ -464,7 +464,7 @@ mod windows {
+             .child(mark(16., theme))
+             .child(
+                 blocks::pixel(13., FontWeight::MEDIUM)
+-                    .child(horizon_launcher::i18n::tr("Horizon Launcher")),
++                    .child(horizon_launcher::i18n::tr("Horizon Offline")),
+             );
+         Some(
+             div()

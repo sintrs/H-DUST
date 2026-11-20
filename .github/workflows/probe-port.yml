@@ -1,0 +1,68 @@
+# 编译探针：上游源码 + tools/ci/offline-port.patch，只做 cargo check，不发版。
+# 目的：把 gerdaroot 那套离线账号（离线名列表、无拥有者可玩）移植到最新上游后，
+# 到底有多少编译错误。手动触发，日志作为 artifact 留下。
+name: probe-port
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 上游源码 tag（nightly-source/ 之后的部分）
+        required: false
+        default: 2026-11-19-5ef7734
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch upstream source
+        run: |
+          TAG="${{ inputs.upstream_tag }}"
+          curl -fsSL -o upstream.tar.gz \
+            "https://codeload.github.com/horizon-rust/horizon/tar.gz/nightly-source/$TAG"
+          mkdir src
+          tar -xzf upstream.tar.gz -C src --strip-components=1 --touch
+          echo "upstream: $TAG"
+
+      - name: Apply the offline port
+        run: |
+          cd src
+          git init -q
+          git apply --stat ../tools/ci/offline-port.patch
+          git apply ../tools/ci/offline-port.patch
+          echo "patch applied"
+
+      - name: Libraries GPUI links to
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev \
+            libvulkan-dev libasound2-dev libudev-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/launcher
+
+      - name: cargo check
+        run: |
+          cd src/launcher
+          set +e
+          cargo check --message-format=short > /tmp/check.log 2>&1
+          echo "exit=$?"
+          echo "--- 错误数 ---"
+          grep -c "error\[E" /tmp/check.log || true
+          echo "--- 前 80 条 ---"
+          grep -E "^error" /tmp/check.log | head -80 || true
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: check-log
+          path: /tmp/check.log
