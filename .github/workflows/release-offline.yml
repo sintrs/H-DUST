@@ -1,12 +1,12 @@
 name: Release offline (offline launcher + official game)
 
-# 出「离线」包：离线名字，可单人、可多人、可开 LAN。
+# 出「离线」包：离线名可在界面里改，单人、多人、LAN 都能用。
 # - 游戏本体：官方 nightly 包**原样复制**，不编译
-# - 启动器：从同一 nightly 的**上游最新源码**编译，只打一个最小补丁
-#   （不再注入 --developer-single-player，见 tools/ci/patch_launcher_offline.py）
+# - 启动器：从同一 nightly 的**上游源码**编译，然后打 offline-port.patch：
+#   把上游 11 月删掉的离线账号体系（离线名、无拥有者可玩）移植回来。
 #
-# 为什么只改一行就够：client 无账号会话时本就用 offline_uuid(--name)，
-# 所有网络锁都只挂在那个 flag 上。不注入它 → 走正常启动路径 → 单人/多人/LAN 全开。
+# 与 gerdaroot 的做法一致（他也是把离线账号层放回启动器），但我们跟着上游走：
+# 补丁以 tools/ci/offline-port.patch 的形式存在，上游一变就在 CI 里三方重放。
 on:
   schedule:
     - cron: '*/35 * * * *'
@@ -108,8 +108,12 @@ jobs:
           git -C src checkout -q FETCH_HEAD
           echo "source HEAD: $(git -C src rev-parse HEAD)"
 
-      - name: Patch the launcher for offline identity
-        run: python3 tools/ci/patch_launcher_offline.py src
+      - name: Port the offline account layer onto this source
+        run: |
+          set -euo pipefail
+          git -C src apply --stat ../tools/ci/offline-port.patch
+          git -C src apply ../tools/ci/offline-port.patch
+          echo "offline-port.patch applied to $(git -C src rev-parse --short HEAD)"
 
       - name: Build the launcher
         env:
@@ -146,7 +150,8 @@ jobs:
         run: |
           set -euo pipefail
           bash tools/ci/make-offline-package.sh \
-            launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher
+            launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher \
+            "${VERSION_TAG%-offline}"
 
       - name: Create release notes
         run: |
@@ -156,11 +161,20 @@ jobs:
             echo
             echo "| Part | Source |"
             echo "|---|---|"
-            echo "| Launcher | built from upstream nightly-source \`${NIGHTLY_COMMIT:0:7}\` with one patch |"
-            echo "| Game | official nightly \`${NIGHTLY_COMMIT:0:7}\`, copied verbatim |"
-            echo "| Patch | \`mark()\` no longer injects \`--developer-single-player\`; the client then uses \`offline_uuid(name)\` natively |"
+            echo "| Launcher | built from upstream nightly-source \`${NIGHTLY_COMMIT:0:7}\` + the offline account patch |"
+            echo "| Game | official nightly \`${NIGHTLY_COMMIT:0:7}\` (installed as \`${VERSION_TAG%-offline}\`), copied verbatim |"
+            echo "| Patch | offline names, no account needed, multiplayer/LAN unlocked, no self-update |"
             echo
-            echo "Run \`./run-offline.sh\`. No Microsoft account is needed, and no account session is ever read."
+            echo "Unzip, run \`./horizon-launcher\`. The bundled game build installs itself on first start."
+            echo
+            echo "Change your name in **Settings → Account → Play offline**, or:"
+            echo
+            echo '```'
+            echo "./horizon-launcher account offline YourName"
+            echo '```'
+            echo
+            echo "No Microsoft account is needed and no account session is ever read. Servers with"
+            echo "\`online-mode=true\` still reject offline identities, as in other offline builds."
           } > release-notes-offline.md
 
       - name: Tag and publish
