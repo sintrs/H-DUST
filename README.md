@@ -139,65 +139,68 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 
 拆成两个互不干扰的 workflow，各自监控、各自 state、各自 tag 后缀：
 
-<<<<<<< HEAD
 | Workflow | 产物 | tag | state |
 |---|---|---|---|
 | `.github/workflows/release-game.yml` | 官方 nightly 包原样复制，不编译 | `nightly-YYYY-MM-DD-xxxxxxx-game` | `state/game.json` |
-| `.github/workflows/release-offline.yml` | 离线启动器（上游源码编）+ 官方游戏，单人/多人/LAN 全开 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
-=======
-1. `tools/ci/monitor_upstream.py` 从 `horizon-rust/horizon/releases` 取最新 `nightly`
-   和 `launcher@X.Y.Z`，解析 `Nightly YYYY-MM-DD · xxxxxxx`；
-2. 与 `state/upstream.json` 比较。没有变化就什么也不做；有变化就提交新的 state；
-3. 用**上游原样的版本号**打 tag：`nightly-YYYY-MM-DD-xxxxxxx`，
-   游戏源码钉在不可变的 `nightly-source/YYYY-MM-DD-xxxxxxx` tag；
-4. 启动器用**上游最新源码**：反向合并 `1e789800af`（上游删除离线名字那次提交），
-   再用 `tools/ci/patch_launcher_offline.py` 打开 `dev_offline`、关掉自更新；
-   游戏本体不编译，直接复制官方 nightly 包；
-5. 打包时二次校验官方 `nightly` 骨架仍是同一个 commit，防止构建中途上游换版；
-6. 发布 GitHub Release，上传 `horizon-linux-x86_64-offline.tar.gz`。
->>>>>>> 6d747d0 (ci: use upstream game package and build offline launcher from reverted upstream source)
+| `.github/workflows/release-offline.yml` | 离线启动器（上游源码编 + 离线补丁）+ 官方游戏 | `nightly-YYYY-MM-DD-xxxxxxx-offline` | `state/offline.json` |
 
 两者都用 `tools/ci/monitor_upstream.py` 读 `horizon-rust/horizon/releases`，
 解析 `Nightly YYYY-MM-DD · xxxxxxx`，与各自 state 比较；没变化就跳过，有变化才构建发布。
 
 - **本体链路**：直接下载官方 `horizon-linux-x86_64.tar.gz`，一个字节不改，校验 commit 后发布。
 - **离线链路**：游戏包同样原样复制；**只编启动器**——拿同一 nightly 的上游源码，
-  打一个最小补丁后编译，替换掉官方二进制。
+  打 `tools/ci/offline-port.patch` 后编译，替换掉官方二进制。
 
-### 离线是怎么来的（关键）
+### 离线是怎么来的
 
-上游从 0.2.79 起删掉离线账号体系，又用 `--developer-single-player` 把开发者模式锁成单人。
-锁一共三道：
+上游 11-09 的 `1e789800af` 删掉了整套离线账号（`Player::Offline`、`add_offline`、
+`offline_selected`），之后只能用 `--developer-single-player` 进开发者单人模式，
+而那条路把多人、LAN 一起锁死。
 
-1. `launcher/src/developer_offline.rs::mark()` 往命令行注入该 flag；
-2. 同文件 `validate()` 见到 `--server` / `--quickPlayMultiplayer` 等直接报错；
-3. `crates/horizon-client/.../developer_launch.rs` 在 client 里再拦一次。
+现在的做法是**把离线账号层移植回最新的启动器**，和 gerdaroot 那套同源，但跟着上游走：
 
-但 client **本身原生支持离线身份连服务器**：`connect_remote_session` 在没有账号会话时
-用的就是 `offline_uuid(name)`，`--name` 也早有定义。所有网络锁都只挂在那个 flag 上。
+| 文件 | 改的什么 |
+|---|---|
+| `launcher/src/account.rs` | 恢复 `offline` 名单、`offline_selected`、`Player`、`add_offline`、`name_arg`，`GATE_OPEN = true` 打开拥有者门 |
+| `launcher/src/account.rs` | `GameSession` 加 `name`，启动时以 `--name <离线名>` 传给 client |
+| `launcher/src/cli.rs` | `account offline NAME` / `forget-offline` / `select` 认离线名 |
+| `launcher/src/glass_account.rs` | 账号页新增「Play offline」卡片：输入框直接改离线名 |
+| `launcher/src/horizon_bundle.rs` | 启动时把随包 `data/versions` 装进数据目录并选中 |
+| `launcher/src/backend.rs` | `self_update_allowed()` 恒 false，不再自我替换 |
+| `launcher/src/launcher_setup.rs` | `launcher_download_available()` 恒 false，不再提示「下载新启动器」 |
 
-所以补丁只做一件事：**`mark()` 不再注入 `--developer-single-player`**（见
-`tools/ci/patch_launcher_offline.py`）。于是：
+合计 14 个文件、+503/−74 行，全部在 `launcher/src` 里，`crates/` 一行未动——
+client 本来就用 `offline_uuid(name)` 算身份，不需要改游戏本体。
 
-- `validate(cmd)` 里 `offline` 恒为 `false`，网络校验自动全部跳过，不用改它；
-- `require_capability()` 只探测 client 的 `--launch-api`，client 没动，仍通过；
-- client 走正常启动路径 → **单人、多人、LAN 全部可用**，身份是离线 UUID。
+**版本目录名不再有 `developer-` 前缀**：那是上游开发者通道的判据
+（`developer_install::is_developer` 只看目录名 + `.installed` + `developer.json`）。
+移植版走正常账号路径，所以目录就是 `data/versions/nightly-YYYY-MM-DD-xxxxxxx/`，
+启动器当普通版本对待。
 
-启动器仍然走开发者分支，因为版本目录满足三条文件条件：
+### 包里有什么
 
-1. 目录名以 `developer-` 开头（`developer_install::is_developer`）；
-2. 目录里有 `.installed` 空文件；
-3. 目录里有 `developer.json`，内容是 `{"revision":"<40 位十六进制>"}`。
+```
+horizon-offline-linux-x86_64/
+  horizon-launcher                 自编，打了离线补丁
+  data/versions/nightly-.../       官方 nightly 游戏，原样复制
+  PLAY-OFFLINE.txt
+```
 
-再配合 `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1`，launcher 就不会去读账号会话。
-解压后运行 `./run-offline.sh`：首次把游戏装进启动器数据目录并选中，之后直接开局。
+没有安装脚本、没有 `run-offline.sh`、没有 `offline-name.txt`。解压后直接打开
+`horizon-launcher`，它自己把随包版本装进启动器数据目录并选中。离线名在
+**设置 → 账号 → Play offline** 里改，或者：
+
+```bash
+./horizon-launcher account offline YourName
+./horizon-launcher account            # 看当前是谁在玩
+```
 
 > 连 `online-mode=true` 的正版服务器仍会被服务端拒绝——这是离线身份的固有限制，
-> 与 gerdaroot 那套离线启动器一致。离线开服（`online-mode=false`）和 LAN 不受影响。
+> 与 gerdaroot 那套离线启动器一致。离线服（`online-mode=false`）和 LAN 不受影响。
 
-> 早期试过「上游源码反向合并删除离线账号那次提交」：`1e789800af`（11-09）到当前 nightly
-> 隔了 2 万多次提交、19 个启动器源码被大改，`git revert` 整文件回退后编译报
-> `horizon_mods` 缺失、`Settings` 字段不存在等一堆错。那条路已放弃。
+> 早期试过「整文件反向合并删除离线账号那次提交」：11-09 到当前 nightly 隔了 2 万多次
+> 提交、19 个启动器源码被大改，`git revert` 后编译报 `horizon_mods` 缺失、
+> `Settings` 字段不存在等一堆错。那条路已放弃。
 
 手动重建：在 Actions 里选对应 workflow → Run workflow，勾 `force` 可按当前上游 nightly
 强制再跑一次（同版本 tag 已存在时会拒绝覆盖，不会静默替换）。
@@ -209,25 +212,18 @@ workflow 在宿主侧算好 `HORIZON_GAME_BUILD_ID` 写进环境变量，脚本�
 ```bash
 git clone https://github.com/sintrs/H-DUST.git
 cd H-RUST
-# 改 tools/ci/*.sh、monitor_upstream.py、workflow
+# 改 tools/ci/*.sh、offline-port.patch、monitor_upstream.py、workflow
 git add -A && git commit -m '...' && git push
 ```
 
-- 仓库保持很小，只有脚本、监控 state 和 workflow（当前约几十 KB）。
-- 每次构建时 Actions 现场 clone 上游和离线分支，源码天然是新的。
-<<<<<<< HEAD
+- 仓库保持很小（几十 KB），只有脚本、补丁、监控 state 和 workflow。
+- 每次构建时 Actions 现场拉上游源码，源码天然是新的。
 - `state/game.json` 和 `state/offline.json` 由各自的 Actions 自动提交，
   手工只用于排查或回退，别当成主编辑对象。
 - `build-linux.yml` 保留作手动构建备用；正式产物由两条 `release-*.yml` 生成：
   **只编启动器，游戏二进制原样复制官方 nightly 包**。
-- 旧的 `auto-release.yml` 已停用（整文件回退方案编译不过，方案见上一节）。
-=======
-- `state/upstream.json` 由 Actions 自动提交，手工只用于排查或回退，别当成主编辑对象。
-- `build-linux.yml` 保留作手动构建备用；正式产物由 `auto-release.yml` 生成：
-  **只编启动器，游戏二进制原样复制官方 nightly 包**。
->>>>>>> 6d747d0 (ci: use upstream game package and build offline launcher from reverted upstream source)
-- 当前**没有配置 `RELEASE_SIGNING_KEY`**，所以发布的是可直接使用的产物，
-  不是启动器可自动更新的签名通道。运行时请带
-  `HORIZON_LAUNCHER_NO_SELF_UPDATE=1`，防止被官方/离线分支的签名更新覆盖。
-  以后要做自有更新通道，再生成 Ed25519 密钥对、把公钥写进 fork 的
-  `release-keys.txt`、私钥设为仓库 secret `RELEASE_SIGNING_KEY`，并patch `REPO` 常量。
+- **补丁腐烂是唯一要持续盯的**：上游一改 `account.rs` / `cli.rs`，`git apply` 会失败。
+  `probe-port.yml` 就是为此准备的——手动跑一次 `cargo check`，只看编译错误不发版，
+  在真正发版前就能知道补丁还贴不贴得上。
+- 当前**没有配置 `RELEASE_SIGNING_KEY`**，发布的是可直接使用的产物，不是可自动更新的
+  签名通道；启动器已关掉自更新，所以不会把自己换回官方版。
