@@ -16,6 +16,9 @@ on:
 
 permissions:
   contents: write
+  # gh release create/upload/edit; contents: write already implies it, spelled out so a
+  # future narrowing of that block does not silently break publishing.
+  releases: write
 
 concurrency:
   group: h-rust-release-offline
@@ -177,9 +180,34 @@ jobs:
             echo "Change the name in Settings -> Account -> Play offline."
           } > package/BUILD-INFO.txt
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish the offline package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One rolling release, not one per nightly: the body says which build the asset
+          # is, and every run replaces the asset. The repository page keeps two entries in
+          # total instead of a hundred, and the old package is never a stale download.
+          TAG=nightly-offline
+          NAME="Horizon offline (Linux x86_64)"
+          NOTE="Built from upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}). Game package copied verbatim; launcher compiled from the same source with the offline account patch."
+          ASSET=package/horizon-offline-linux-x86_64-offline.tar.gz
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --title "$NAME" \
+              --notes "$NOTE" \
+              --latest=false
+          fi
+          # Keep the description on the current build even when only the asset changed.
+          gh release edit "$TAG" --notes "$NOTE" --title "$NAME"
+
+      - name: Keep the package as a run artifact
+        uses: actions/upload-artifact@v4
         with:
           name: horizon-offline-${{ env.VERSION_TAG }}
           path: package/
-          retention-days: 90
+          retention-days: 3
           if-no-files-found: error

@@ -39,7 +39,9 @@ fi
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
-ROOT="$WORK/$NAME"
+# 包内**不再套一层同名的目录**：解开就是 horizon-launcher 和 data/ 直接落在当前目录。
+# 以前套的那层 horizon-offline-linux-x86_64/ 只是让 tar 有个根，玩家却要多 cd 一次。
+ROOT="$WORK/root"
 VERSIONS="$ROOT/data/versions/$TAG"
 mkdir -p "$VERSIONS"
 
@@ -102,6 +104,8 @@ Minecraft account (online-mode=true) will still reject offline identities.
 EOF
 
 ASSET="$OUT/$NAME-offline.tar.gz"
-tar -czf "$ASSET" -C "$WORK" "$NAME"
+# `-C root .` so the archive has no wrapper directory: `tar -xzf` here yields
+# ./horizon-launcher and ./data directly. Sorting keeps runs comparable.
+tar -czf "$ASSET" -C "$ROOT" --sort=name .
 echo "==> 打包完成：$ASSET（$(du -h "$ASSET" | cut -f1)）"
 echo "    tag=$TAG  commit=$COMMIT"

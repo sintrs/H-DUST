@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  releases: write
 
 concurrency:
   group: h-rust-release-game
@@ -91,9 +92,32 @@ jobs:
           grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
             || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish the game package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One rolling release, same as the offline one. The asset is the upstream file
+          # unchanged, so its sha256 still matches the release's own SHA256SUMS.
+          TAG=nightly-game
+          NAME="Horizon game (Linux x86_64, upstream nightly as published)"
+          NOTE="Upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}), copied without rebuilding. Verifies against the upstream release's SHA256SUMS."
+          ASSET=horizon-linux-x86_64.tar.gz
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --title "$NAME" \
+              --notes "$NOTE" \
+              --latest=false
+          fi
+          gh release edit "$TAG" --notes "$NOTE" --title "$NAME"
+
+      - name: Keep the package as a run artifact
+        uses: actions/upload-artifact@v4
         with:
           name: horizon-game-${{ env.VERSION_TAG }}
           path: horizon-linux-x86_64.tar.gz
-          retention-days: 90
+          retention-days: 3
           if-no-files-found: error

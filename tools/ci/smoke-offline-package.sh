@@ -15,8 +15,12 @@ set -uo pipefail
 
 TGZ=${1:?usage: smoke-offline-package.sh <package.tar.gz> <version tag>}
 TAG=${2:?usage: smoke-offline-package.sh <package.tar.gz> <version tag>}
+# Absolute, because everything below runs from a scratch directory (the caller passes a
+# path relative to its own cwd, as the workflow does with package/...).
+TGZ=$(cd "$(dirname "$TGZ")" && pwd)/$(basename "$TGZ")
+[[ -f "$TGZ" ]] || { echo "::error title=Offline package smoke test::no such package: $TGZ"; exit 1; }
 
-TOP=horizon-offline-linux-x86_64
+# The archive has no wrapper directory; the smoke test asserts that below.
 # /tmp is small on some runners and this unpacks a ~200 MB build, so prefer a roomier temp.
 mkdir -p "${SMOKE_TMPDIR:-${TMPDIR:-/var/tmp}}"
 BASE=$(mktemp -d "$( cd "${SMOKE_TMPDIR:-${TMPDIR:-/var/tmp}}" && pwd )/h-smoke.XXXXXX")
@@ -52,7 +56,13 @@ if ! tar -xzf "$TGZ" -C "$BASE/extract" --no-same-owner --touch; then
   bad "cannot unpack $TGZ"
   exit 1
 fi
-PKG="$BASE/extract/$TOP"
+PKG="$BASE/extract"
+# The package has no wrapper directory: what a player gets on `tar -xzf` is exactly
+# horizon-launcher and data/ in the folder they chose. Assert that, because a wrapper
+# creeping back in is the one thing that changes what the instructions tell them to do.
+if [[ "$(ls -A "$PKG" | grep -vx -e horizon-launcher -e data -e PLAY-OFFLINE.txt | head -1)" ]]; then
+  bad "the package unpacks with more than the expected top level ($(ls -A "$PKG" | tr '\n' ' '))"
+fi
 [[ -x "$PKG/horizon-launcher" ]] || { bad "the package has no executable horizon-launcher"; exit 1; }
 [[ -d "$PKG/data/versions/$TAG" ]] || { bad "the package has no bundled build at data/versions/$TAG"; exit 1; }
 [[ -f "$PKG/data/versions/$TAG/.installed" ]] \
