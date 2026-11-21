@@ -74,13 +74,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Checked against the release's own SHA256SUMS, and against the digest GitHub
-          # records for the asset, so a truncated or swapped transfer cannot ship.
-          # Saved under the name we publish, which shares its prefix with the offline
-          # package; the upstream asset name stays the first argument (that is what
-          # SHA256SUMS is keyed by).
-          bash tools/ci/fetch-verified-asset.sh horizon-linux-x86_64.tar.gz horizon-linux-x86_64-game.tar.gz
-          ls -lh horizon-linux-x86_64-game.tar.gz
+          # Published under the upstream nightly name so the file says which build it is:
+          #   horizon-linux-x86_64-<version_tag>.tar.gz
+          # The upstream asset name stays the first argument of fetch-verified-asset.sh,
+          # because that is what the release's SHA256SUMS is keyed by.
+          ASSET="horizon-linux-x86_64-${VERSION_TAG}.tar.gz"
+          bash tools/ci/fetch-verified-asset.sh horizon-linux-x86_64.tar.gz "$ASSET"
+          ls -lh "$ASSET"
 
       - name: Verify nightly still matches the pinned commit
         env:
@@ -100,19 +100,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # One rolling release, same as the offline one. The asset is the upstream file
-          # unchanged, so its sha256 still matches the release's own SHA256SUMS -- only the
-          # download name changes, to line up with the offline package:
-          #   horizon-linux-x86_64-game.tar.gz    (this one, upstream bytes)
-          #   horizon-linux-x86_64-offline.tar.gz (the patched one)
+          # One rolling release. The asset carries the upstream nightly name so a download
+          # is self-describing:
+          #   horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz
+          # The bytes are the upstream file unchanged, so its sha256 still matches the
+          # upstream release's own SHA256SUMS.
           TAG=nightly-game
           NAME="Horizon game (Linux x86_64, upstream nightly as published)"
           NOTE="Upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}), copied without rebuilding. Verifies against the upstream release's SHA256SUMS."
-          ASSET=horizon-linux-x86_64-game.tar.gz
+          ASSET="horizon-linux-x86_64-${VERSION_TAG}.tar.gz"
 
-          # The asset is renamed, so drop any differently-named one left by an older run
-          # (it used to be published as horizon-linux-x86_64.tar.gz) instead of ending up
-          # with both on the release.
+          # The name changes every nightly, so drop the previous asset instead of piling
+          # up one file per run on the same release.
           for old in $(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null); do
             [[ "$old" == "$ASSET" ]] || gh release delete-asset "$TAG" "$old" --yes
           done
@@ -131,6 +130,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: horizon-game-${{ env.VERSION_TAG }}
-          path: horizon-linux-x86_64-game.tar.gz
+          path: horizon-linux-x86_64-${{ env.VERSION_TAG }}.tar.gz
           retention-days: 3
           if-no-files-found: error

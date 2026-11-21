@@ -153,6 +153,10 @@ jobs:
           bash tools/ci/make-offline-package.sh \
             launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher \
             "${VERSION_TAG}"
+          # The name carries the build time, so hand it to the later steps.
+          ASSET=$(ls package/horizon-linux-x86_64-offline-*.tar.gz)
+          echo "PACKAGE_ASSET=$ASSET" >> "$GITHUB_ENV"
+          echo "$PACKAGE_ASSET"
 
       # The binary that ships, unzipped and run for real. A patched build that compiles
       # but no longer opens the account gate, keeps an offline name, or installs its
@@ -162,8 +166,7 @@ jobs:
           SMOKE_TMPDIR: ${{ runner.temp }}/smoke
         run: |
           set -euo pipefail
-          bash tools/ci/smoke-offline-package.sh \
-            package/horizon-linux-x86_64-offline.tar.gz "${VERSION_TAG}"
+          bash tools/ci/smoke-offline-package.sh "$PACKAGE_ASSET" "${VERSION_TAG}"
 
       - name: Write build info
         run: |
@@ -190,10 +193,10 @@ jobs:
           TAG=nightly-offline
           NAME="Horizon offline (Linux x86_64)"
           NOTE="Built from upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}). Game package copied verbatim; launcher compiled from the same source with the offline account patch."
-          ASSET=package/horizon-linux-x86_64-offline.tar.gz
+          ASSET="$PACKAGE_ASSET"
 
-          # Same naming on both releases: horizon-linux-x86_64-<what it is>.tar.gz.
-          # Drop assets under other names left by an older run instead of stacking them.
+          # The name carries the build time, so it changes every run: drop the previous
+          # asset instead of piling up one file per nightly on the same release.
           for old in $(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null); do
             [[ "$old" == "$(basename "$ASSET")" ]] || gh release delete-asset "$TAG" "$old" --yes
           done

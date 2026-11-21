@@ -27,9 +27,11 @@ TAG=${6:?}
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "错误：版本 tag 含非法字符：$TAG" >&2; exit 1; }
 
 SHORT=${COMMIT:0:7}
-# Published as horizon-linux-x86_64-offline.tar.gz, the same shape as the game package
-# that release-game.yml publishes as horizon-linux-x86_64-game.tar.gz: same prefix, the
-# suffix says what the file is.
+# 附件名带构建时刻，和 game 那边带版本号的命名对位：
+#   horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz   （game，上游原名）
+#   horizon-linux-x86_64-offline-2026-11-21-0810.tar.gz      （这个，日期-时分）
+# 时间取 UTC，可用 STAMP 覆盖（测试用）。
+STAMP=${STAMP:-$(date -u +%Y-%m-%d-%H%M)}
 NAME=horizon-linux-x86_64
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/h-offline.XXXXXX")
@@ -106,7 +108,7 @@ Single-player, multiplayer and LAN all work. Servers that require a real
 Minecraft account (online-mode=true) will still reject offline identities.
 EOF
 
-ASSET="$OUT/$NAME-offline.tar.gz"
+ASSET="$OUT/$NAME-offline-$STAMP.tar.gz"
 # `-C root .` so the archive has no wrapper directory: `tar -xzf` here yields
 # ./horizon-launcher and ./data directly. Sorting keeps runs comparable.
 tar -czf "$ASSET" -C "$ROOT" --sort=name .
