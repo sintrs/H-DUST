@@ -112,5 +112,10 @@ ASSET="$OUT/$NAME-offline-$STAMP.tar.gz"
 # `-C root .` so the archive has no wrapper directory: `tar -xzf` here yields
 # ./horizon-launcher and ./data directly. Sorting keeps runs comparable.
 tar -czf "$ASSET" -C "$ROOT" --sort=name .
+# The file name carries the build time, so the caller has to learn it from us rather
+# than globbing for it. GITHUB_ENV covers later steps; the stdout line is for a human.
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  echo "PACKAGE_ASSET=$ASSET" >> "$GITHUB_ENV"
+fi
 echo "==> 打包完成：$ASSET（$(du -h "$ASSET" | cut -f1)）"
 echo "    tag=$TAG  commit=$COMMIT"

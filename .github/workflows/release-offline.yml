@@ -147,16 +147,15 @@ jobs:
           grep -q "${NIGHTLY_COMMIT}" upstream-nightly.txt \
             || { echo '::error::upstream nightly moved during the build; retry next run'; exit 1; }
 
+      # The packaged name carries the build time, so make-offline-package.sh writes the
+      # path it just produced into $GITHUB_ENV for the steps below. (GITHUB_ENV does not
+      # apply to the step that writes it, hence none of this is read here.)
       - name: Assemble the offline package
         run: |
           set -euo pipefail
           bash tools/ci/make-offline-package.sh \
             launcher.tar.gz game.tar.gz "${NIGHTLY_COMMIT}" package dist/horizon-launcher \
             "${VERSION_TAG}"
-          # The name carries the build time, so hand it to the later steps.
-          ASSET=$(ls package/horizon-linux-x86_64-offline-*.tar.gz)
-          echo "PACKAGE_ASSET=$ASSET" >> "$GITHUB_ENV"
-          echo "$PACKAGE_ASSET"
 
       # The binary that ships, unzipped and run for real. A patched build that compiles
       # but no longer opens the account gate, keeps an offline name, or installs its
