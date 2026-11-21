@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
 
+# Releases are written through the contents permission (there is no `releases` scope).
 permissions:
   contents: write
-  releases: write
 
 concurrency:
   group: h-rust-release-game

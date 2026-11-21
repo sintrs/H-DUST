@@ -14,11 +14,10 @@ on:
         type: boolean
         default: false
 
+# Releases are written through the contents permission (there is no `releases` scope);
+# gh release create/upload/edit all need it.
 permissions:
   contents: write
-  # gh release create/upload/edit; contents: write already implies it, spelled out so a
-  # future narrowing of that block does not silently break publishing.
-  releases: write
 
 concurrency:
   group: h-rust-release-offline
