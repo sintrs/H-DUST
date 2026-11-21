@@ -1,18 +1,17 @@
 # H-RUST
 
-跟上游 nightly 走，把启动器的离线账号层用补丁带回来，打成解压即用的 Linux 包。
+跟上游 nightly 走，打个补丁，做成解压即用的 Linux 包。
 
 ## 用
 
-Actions 里点最近一次 `Build offline` 的运行，页面底部 **Artifacts** 下载
-`horizon-offline-nightly-...`，里面是 `horizon-offline-linux-x86_64-offline.tar.gz`。
-解压后直接运行里面的 `horizon-launcher`：
+Releases 页的 `nightly-offline`，附件就是最新的包（每次构建覆盖，只有一个）：
 
 ```bash
 tar -xzf horizon-offline-linux-x86_64-offline.tar.gz
-cd horizon-offline-linux-x86_64
 ./horizon-launcher
 ```
+
+包内没有套一层目录，解开就是 `horizon-launcher` 和 `data/`，不用再 `cd`。
 
 首次启动会把随包的 `data/versions/` 装进 `~/.local/share/horizon-launcher/`，选中该版本，
 并关掉自动更新。之后不再需要这个解压目录（约占 180 MB，可以删）。
@@ -32,28 +31,19 @@ cd horizon-offline-linux-x86_64
 
 顶栏会显示当前离线名；Home 标题旁显示实际版本 tag。
 
-### 自检
-
-```bash
-./horizon-launcher --version    # horizon-launcher 2.4.4 = 打过补丁的
-./horizon-launcher account list # * YourName  offline  有这行就对了
-```
-
 ## 发
 
-两条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。只上传 Actions artifact
-（保留 90 天），不发 Release：
+两条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。产物发到**滚动 Release**：
+每个 workflow 一个固定 tag，每次构建覆盖附件，所以仓库里始终只有两个 Release。
 
-| Workflow | Artifact | 内容 |
+| Workflow | Release tag | 附件 |
 |---|---|---|
-| `release-offline.yml` | `horizon-offline-nightly-...` | 打补丁的启动器 + 官方本体，一个包自足 |
-| `release-game.yml` | `horizon-game-nightly-...` | 官方 nightly 包原样转发 |
+| `release-offline.yml` | `nightly-offline` | 启动器 + 本体，一个包自足 |
+| `release-game.yml` | `nightly-game` | 上游 nightly 包原样转发 |
 
-同一个 nightly 上修 bug 重跑：手动 `Build offline`，勾 `force=true`，旧 artifact 留着不影响，
-下载时认最新的运行编号。
+每次运行另留一份 artifact（保留 3 天），方便核对某一次的具体产物。
 
-`probe-port.yml` 是补丁探针，手动跑一次 `cargo check`（约 1 分钟），日志在 artifact `check-log`，
-看 `error[E` 条数。
+同一个 nightly 上修 bug 重跑：手动 `Build offline`，勾 `force=true`，附件会被覆盖。
 
 ## 改
 
@@ -63,10 +53,7 @@ git clone https://github.com/sintrs/H-RUST.git && cd H-RUST
 git add -A && git commit -m '...' && git push
 ```
 
-补丁是唯一的真相：`launcher/src` 下的代码，加上 `launcher/Cargo.toml` 与 `launcher/Cargo.lock`
-里的版本号（`2.4.4`，`--locked` 构建要求两者一致）。`crates/` 不动。
-
-改补丁**不要手改 hunk 计数**：
+补丁是唯一的真相。改补丁不要手改 hunk 计数：
 
 ```bash
 # 干净的上游源码里
@@ -76,16 +63,16 @@ git add -A && git diff --cached > tools/ci/offline-port.patch
 git stash -u && git apply --check tools/ci/offline-port.patch   # 确认能干净贴上
 ```
 
-上游改了 `account.rs` / `frame.rs` / `cli.rs` 时 `git apply` 会红，跑一次 `probe-port.yml` 就知道。
+上游改了相关源文件时 `git apply` 会红，跑一次 `probe-port.yml` 就知道。
 
 ### 两道闸
 
 `git apply` 只看上下文行，不看行为：上游把一个函数改成空实现，补丁照样贴得干净，编出来也能跑，
-只是离线层没了。所以打完补丁之后、打包之后各有一道检查：
+只是功能没了。所以打完补丁之后、打包之后各有一道检查：
 
 | 检查 | 时机 | 抓什么 |
 |---|---|---|
-| `check-port-invariants.py` | 补丁贴完后 | 补丁依赖的 25 个上游契约（`GATE_OPEN`、`launch_for_game` 签名、`Player` 三态、`GameSession.name`、`.installed`、`data_dir()`、`nightly::date_of`…）。谁挪了就说谁挪了 |
+| `check-port-invariants.py` | 补丁贴完后 | 补丁依赖的 25 个上游契约。谁挪了就说谁挪了 |
 | `smoke-offline-package.sh` | 打包装好之后 | 解开真实的包跑一次：二进制起得来、随包版本被装进数据目录、离线名存得住并生效、`play` 不被账号挡住、不会自我更新 |
 
 两道都是真跑，不是 grep 过一遍就算。本地也能跑：
@@ -95,33 +82,6 @@ python3 tools/ci/check-port-invariants.py <打过补丁的源码目录>
 bash tools/ci/smoke-offline-package.sh <离线包.tar.gz> <版本 tag>
 ```
 
-### 本体是怎么进来的
-
-`release-game.yml` 和 `release-offline.yml` 拿的是同一个文件：上游 nightly release 的
-`horizon-linux-x86_64.tar.gz`，两处都走 `fetch-verified-asset.sh`，对着 release 自带的
-`SHA256SUMS` 验一遍，再对一遍 GitHub 记录的 digest。
-
-离线包里的本体是**逐字节复制**，不重编、不裁剪：解开后 `data/versions/<tag>/` 下 2175 个文件
-与上游包内容完全一致，只多一个启动器认版本用的空标记 `.installed`。两边唯一的区别在启动器
-本身（官方 0.2.92 是我们编译的源码基线，包里换成了打了离线补丁的 2.4.4）。
-
-因为打包时 `tar` 重置了时间戳（`--touch`），**整包的 sha256 不会和上游相等**，相等的是里面的文件。
-
-## 文件
-
-| 文件 | 作用 |
-|---|---|
-| `tools/ci/offline-port.patch` | 离线账号层移植补丁 |
-| `tools/ci/build-linux.sh` | 编译 |
-| `tools/ci/make-offline-package.sh` | 组装离线包 |
-| `tools/ci/check-port-invariants.py` | 补丁依赖的上游契约检查 |
-| `tools/ci/smoke-offline-package.sh` | 打包后的冒烟测试 |
-| `tools/ci/fetch-verified-asset.sh` | 下载上游包并校验 SHA256SUMS |
-| `tools/ci/monitor_upstream.py` | 解析上游 nightly 与 state 比较 |
-| `.github/workflows/release-offline.yml` | 离线链路 |
-| `.github/workflows/release-game.yml` | 本体链路 |
-| `.github/workflows/probe-port.yml` | 补丁编译探针 |
-
 ## 限制
 
-只出 Linux x86_64，glibc ≥ 2.35。本体不重编，直接用官方 nightly 的产物。
+只出 Linux x86_64，glibc ≥ 2.35。本体不重编，直接用上游 nightly 的产物。
