@@ -3,7 +3,7 @@ name: Build offline (offline launcher + official game)
 # 出「离线」包：离线名可在界面里改，单人、多人、LAN 都能用。
 # - 游戏本体：官方 nightly 包**原样复制**，不编译
 # - 启动器：从同一 nightly 的**上游源码**编译，然后打 offline-port.patch
-# - 只上传 Actions artifact，不发 GitHub Release
+# - 产物：滚动 Release `nightly-offline`（每次覆盖附件，名字带北京时间），另留一份 run artifact
 on:
   schedule:
     - cron: '*/35 * * * *'
