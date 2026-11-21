@@ -42,7 +42,7 @@ tar -xzf horizon-linux-x86_64-offline-*.tar.gz
 | `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-<版本 tag>.tar.gz` — 上游 nightly 包原样转发 |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
-offline 的带构建时刻，比如 `horizon-linux-x86_64-offline-2026-11-21-0810.tar.gz`。
+offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。
 名字每次都变，所以每个 Release 上始终只有一个附件，旧的会被删掉。
 
 每次运行另留一份 artifact（保留 3 天），方便核对某一次的具体产物。

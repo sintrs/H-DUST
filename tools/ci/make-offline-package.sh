@@ -29,9 +29,11 @@ TAG=${6:?}
 SHORT=${COMMIT:0:7}
 # 附件名带构建时刻，和 game 那边带版本号的命名对位：
 #   horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz   （game，上游原名）
-#   horizon-linux-x86_64-offline-2026-11-21-0810.tar.gz      （这个，日期-时分）
-# 时间取 UTC，可用 STAMP 覆盖（测试用）。
-STAMP=${STAMP:-$(date -u +%Y-%m-%d-%H%M)}
+#   horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz      （这个，日期-时分）
+# 时间取北京时间（UTC+8），可用 STAMP 覆盖（测试用）。
+# 用 POSIX TZ 写法而不是 Asia/Shanghai：不依赖机器上装没装 tzdata。
+# 缺 tzdata 时 TZ=Asia/Shanghai 会静默退回 UTC，包名就差 8 小时且看不出来。
+STAMP=${STAMP:-$(TZ=CST-8 date +%Y-%m-%d-%H%M)}
 NAME=horizon-linux-x86_64
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/h-offline.XXXXXX")
