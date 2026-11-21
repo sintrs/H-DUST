@@ -27,7 +27,10 @@ TAG=${6:?}
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "错误：版本 tag 含非法字符：$TAG" >&2; exit 1; }
 
 SHORT=${COMMIT:0:7}
-NAME=horizon-offline-linux-x86_64
+# Published as horizon-linux-x86_64-offline.tar.gz, the same shape as the game package
+# that release-game.yml publishes as horizon-linux-x86_64-game.tar.gz: same prefix, the
+# suffix says what the file is.
+NAME=horizon-linux-x86_64
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/h-offline.XXXXXX")
 # KEEP_WORK=1 保留临时目录（本地排查用；CI 里不要设，否则盘子会涨）
@@ -40,7 +43,7 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
 # 包内**不再套一层同名的目录**：解开就是 horizon-launcher 和 data/ 直接落在当前目录。
-# 以前套的那层 horizon-offline-linux-x86_64/ 只是让 tar 有个根，玩家却要多 cd 一次。
+# 以前套的那层 wrapper 目录只是让 tar 有个根，玩家却要多 cd 一次。
 ROOT="$WORK/root"
 VERSIONS="$ROOT/data/versions/$TAG"
 mkdir -p "$VERSIONS"

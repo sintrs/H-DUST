@@ -163,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tools/ci/smoke-offline-package.sh \
-            package/horizon-offline-linux-x86_64-offline.tar.gz "${VERSION_TAG}"
+            package/horizon-linux-x86_64-offline.tar.gz "${VERSION_TAG}"
 
       - name: Write build info
         run: |
@@ -190,7 +190,13 @@ jobs:
           TAG=nightly-offline
           NAME="Horizon offline (Linux x86_64)"
           NOTE="Built from upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}). Game package copied verbatim; launcher compiled from the same source with the offline account patch."
-          ASSET=package/horizon-offline-linux-x86_64-offline.tar.gz
+          ASSET=package/horizon-linux-x86_64-offline.tar.gz
+
+          # Same naming on both releases: horizon-linux-x86_64-<what it is>.tar.gz.
+          # Drop assets under other names left by an older run instead of stacking them.
+          for old in $(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null); do
+            [[ "$old" == "$(basename "$ASSET")" ]] || gh release delete-asset "$TAG" "$old" --yes
+          done
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber

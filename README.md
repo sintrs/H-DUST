@@ -7,7 +7,7 @@
 Releases 页的 `nightly-offline`，附件就是最新的包（每次构建覆盖，只有一个）：
 
 ```bash
-tar -xzf horizon-offline-linux-x86_64-offline.tar.gz
+tar -xzf horizon-linux-x86_64-offline.tar.gz
 ./horizon-launcher
 ```
 
@@ -38,8 +38,10 @@ tar -xzf horizon-offline-linux-x86_64-offline.tar.gz
 
 | Workflow | Release tag | 附件 |
 |---|---|---|
-| `release-offline.yml` | `nightly-offline` | 启动器 + 本体，一个包自足 |
-| `release-game.yml` | `nightly-game` | 上游 nightly 包原样转发 |
+| `release-offline.yml` | `nightly-offline` | `horizon-linux-x86_64-offline.tar.gz` — 启动器 + 本体，一个包自足 |
+| `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-game.tar.gz` — 上游 nightly 包原样转发 |
+
+两个附件同一个前缀，后缀说明是什么：`-offline` 是打过补丁的包，`-game` 是官方原件。
 
 每次运行另留一份 artifact（保留 3 天），方便核对某一次的具体产物。
 

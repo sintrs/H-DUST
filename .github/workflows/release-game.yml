@@ -76,8 +76,11 @@ jobs:
           set -euo pipefail
           # Checked against the release's own SHA256SUMS, and against the digest GitHub
           # records for the asset, so a truncated or swapped transfer cannot ship.
-          bash tools/ci/fetch-verified-asset.sh horizon-linux-x86_64.tar.gz horizon-linux-x86_64.tar.gz
-          ls -lh horizon-linux-x86_64.tar.gz
+          # Saved under the name we publish, which shares its prefix with the offline
+          # package; the upstream asset name stays the first argument (that is what
+          # SHA256SUMS is keyed by).
+          bash tools/ci/fetch-verified-asset.sh horizon-linux-x86_64.tar.gz horizon-linux-x86_64-game.tar.gz
+          ls -lh horizon-linux-x86_64-game.tar.gz
 
       - name: Verify nightly still matches the pinned commit
         env:
@@ -98,11 +101,21 @@ jobs:
         run: |
           set -euo pipefail
           # One rolling release, same as the offline one. The asset is the upstream file
-          # unchanged, so its sha256 still matches the release's own SHA256SUMS.
+          # unchanged, so its sha256 still matches the release's own SHA256SUMS -- only the
+          # download name changes, to line up with the offline package:
+          #   horizon-linux-x86_64-game.tar.gz    (this one, upstream bytes)
+          #   horizon-linux-x86_64-offline.tar.gz (the patched one)
           TAG=nightly-game
           NAME="Horizon game (Linux x86_64, upstream nightly as published)"
           NOTE="Upstream nightly ${VERSION_TAG} (${NIGHTLY_COMMIT}), copied without rebuilding. Verifies against the upstream release's SHA256SUMS."
-          ASSET=horizon-linux-x86_64.tar.gz
+          ASSET=horizon-linux-x86_64-game.tar.gz
+
+          # The asset is renamed, so drop any differently-named one left by an older run
+          # (it used to be published as horizon-linux-x86_64.tar.gz) instead of ending up
+          # with both on the release.
+          for old in $(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null); do
+            [[ "$old" == "$ASSET" ]] || gh release delete-asset "$TAG" "$old" --yes
+          done
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
@@ -118,6 +131,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: horizon-game-${{ env.VERSION_TAG }}
-          path: horizon-linux-x86_64.tar.gz
+          path: horizon-linux-x86_64-game.tar.gz
           retention-days: 3
           if-no-files-found: error
