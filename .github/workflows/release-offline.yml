@@ -121,12 +121,15 @@ jobs:
           dist/horizon-launcher --version
 
       - name: Download the official game package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 -o launcher.tar.gz \
+          curl -fsSL --retry 3 --retry-all-errors -o launcher.tar.gz \
             "https://github.com/horizon-rust/horizon/releases/download/${LAUNCHER_VERSION}/horizon-launcher-linux-x86_64.tar.gz"
-          curl -fsSL --retry 3 -o game.tar.gz \
-            'https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz'
+          # The game package is the one that ends up shipped byte for byte, so it is the
+          # one worth checking against the release's SHA256SUMS and GitHub's own digest.
+          bash tools/ci/fetch-verified-asset.sh horizon-linux-x86_64.tar.gz game.tar.gz
           ls -lh launcher.tar.gz game.tar.gz dist/horizon-launcher
 
       - name: Verify nightly still matches the pinned commit

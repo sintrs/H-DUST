@@ -95,6 +95,18 @@ python3 tools/ci/check-port-invariants.py <打过补丁的源码目录>
 bash tools/ci/smoke-offline-package.sh <离线包.tar.gz> <版本 tag>
 ```
 
+### 本体是怎么进来的
+
+`release-game.yml` 和 `release-offline.yml` 拿的是同一个文件：上游 nightly release 的
+`horizon-linux-x86_64.tar.gz`，两处都走 `fetch-verified-asset.sh`，对着 release 自带的
+`SHA256SUMS` 验一遍，再对一遍 GitHub 记录的 digest。
+
+离线包里的本体是**逐字节复制**，不重编、不裁剪：解开后 `data/versions/<tag>/` 下 2175 个文件
+与上游包内容完全一致，只多一个启动器认版本用的空标记 `.installed`。两边唯一的区别在启动器
+本身（官方 0.2.92 是我们编译的源码基线，包里换成了打了离线补丁的 2.4.4）。
+
+因为打包时 `tar` 重置了时间戳（`--touch`），**整包的 sha256 不会和上游相等**，相等的是里面的文件。
+
 ## 文件
 
 | 文件 | 作用 |
@@ -104,6 +116,7 @@ bash tools/ci/smoke-offline-package.sh <离线包.tar.gz> <版本 tag>
 | `tools/ci/make-offline-package.sh` | 组装离线包 |
 | `tools/ci/check-port-invariants.py` | 补丁依赖的上游契约检查 |
 | `tools/ci/smoke-offline-package.sh` | 打包后的冒烟测试 |
+| `tools/ci/fetch-verified-asset.sh` | 下载上游包并校验 SHA256SUMS |
 | `tools/ci/monitor_upstream.py` | 解析上游 nightly 与 state 比较 |
 | `.github/workflows/release-offline.yml` | 离线链路 |
 | `.github/workflows/release-game.yml` | 本体链路 |
